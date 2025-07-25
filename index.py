@@ -4,12 +4,74 @@ import fitz  # PyMuPDF
 import io
 from typing import Dict, List, Any
 import logging
+import os
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 s3_client = boto3.client('s3')
+secrets_client = boto3.client('secretsmanager')
+
+def verify_auth_token(event) -> bool:
+    """
+    Verify the authorization token from the request.
+    
+    Returns:
+        bool: True if authentication is valid, False otherwise
+    """
+    try:
+        # Get authorization header from API Gateway event or direct invocation
+        auth_header = None
+        
+        if 'headers' in event:
+            # API Gateway event
+            headers = event.get('headers', {})
+            auth_header = headers.get('Authorization') or headers.get('authorization')
+        elif 'authorization' in event:
+            # Direct invocation with auth field
+            auth_header = event.get('authorization')
+        
+        if not auth_header:
+            logger.error("No authorization header found")
+            return False
+        
+        # Extract token from "Bearer <token>" format
+        if auth_header.startswith('Bearer '):
+            token = auth_header[7:]  # Remove "Bearer " prefix
+        else:
+            token = auth_header
+        
+        # Get the expected token from AWS Secrets Manager
+        secret_id = os.environ.get('AUTH_SECRET_ID')
+        if not secret_id:
+            logger.error("AUTH_SECRET_ID environment variable not set")
+            return False
+        
+        try:
+            response = secrets_client.get_secret_value(SecretId=secret_id)
+            secret_data = json.loads(response['SecretString'])
+            expected_token = secret_data.get('accessKey')
+            
+            if not expected_token:
+                logger.error("No accessKey found in secret")
+                return False
+            
+            # Compare tokens
+            if token == expected_token:
+                logger.info("Authentication successful")
+                return True
+            else:
+                logger.error("Token mismatch")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Failed to retrieve or validate secret: {str(e)}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Authentication verification failed: {str(e)}")
+        return False
 
 def extract_text_with_bounding_boxes(pdf_document: fitz.Document) -> tuple[str, List[Dict[str, Any]]]:
     """
@@ -148,10 +210,25 @@ def lambda_handler(event, context):
     
     Expected event format:
     {
-        "s3_path": "s3://bucket-name/path/to/file.pdf"
+        "s3_path": "s3://bucket-name/path/to/file.pdf",
+        "authorization": "Bearer <token>"  // Optional: can be in headers instead
     }
     """
     try:
+        # Verify authentication first
+        if not verify_auth_token(event):
+            logger.error("Authentication failed")
+            return {
+                'statusCode': 403,
+                'headers': {
+                    'Content-Type': 'application/json',
+                },
+                'body': json.dumps({
+                    'success': False,
+                    'error': 'Authentication failed',
+                    'error_type': 'AuthenticationError'
+                })
+            }
         # Parse S3 path from event
         if 'body' in event:
             # API Gateway event

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test script for PDF processor Lambda function
+Test script for PDF processor Lambda function with authentication
 """
 
 import json
@@ -8,14 +8,39 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(__file__))
 
-from index import lambda_handler
+from index import lambda_handler, verify_auth_token
+
+def test_auth_verification():
+    """Test the authentication verification"""
+    print("Testing authentication verification...")
+    
+    # Test with valid auth (would need actual secret in AWS for real test)
+    test_event_valid = {
+        "s3_path": "s3://test-bucket/sample.pdf",
+        "authorization": "Bearer test-token-12345"
+    }
+    
+    # Test with invalid auth
+    test_event_invalid = {
+        "s3_path": "s3://test-bucket/sample.pdf",
+        "authorization": "Bearer wrong-token"
+    }
+    
+    # Test with missing auth
+    test_event_no_auth = {
+        "s3_path": "s3://test-bucket/sample.pdf"
+    }
+    
+    print("Note: These tests require AWS credentials and actual secrets to work")
+    print("Events prepared for auth testing - would need real AWS environment to execute")
 
 def test_lambda_with_sample_event():
     """Test the Lambda function with a sample event"""
     
-    # Sample event - replace with actual S3 path for testing
+    # Sample event with authentication - replace with actual S3 path and valid token for testing
     test_event = {
-        "s3_path": "s3://your-test-bucket/sample-document.pdf"
+        "s3_path": "s3://your-test-bucket/sample-document.pdf",
+        "authorization": "Bearer your-test-token-here"
     }
     
     # Mock context object (not used in our function)
@@ -64,4 +89,6 @@ def test_lambda_with_sample_event():
         traceback.print_exc()
 
 if __name__ == "__main__":
+    test_auth_verification()
+    print("\n" + "="*50 + "\n")
     test_lambda_with_sample_event()

@@ -1,2 +1,5 @@
 PyMuPDF==1.23.26
 boto3==1.34.0
+# Development dependencies (optional for testing)
+# pytest==7.4.0
+# moto==4.2.0
