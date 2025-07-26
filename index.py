@@ -11,7 +11,12 @@ import os
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-s3_client = boto3.client('s3')
+# Configure S3 client with LocalStack endpoint if running locally
+s3_endpoint_url = os.environ.get('AWS_ENDPOINT_URL')
+if s3_endpoint_url:
+    s3_client = boto3.client('s3', endpoint_url=s3_endpoint_url)
+else:
+    s3_client = boto3.client('s3')
 
 def extract_text_with_bounding_boxes(pdf_document: fitz.Document) -> tuple[str, List[Dict[str, Any]]]:
     """
@@ -31,55 +36,79 @@ def extract_text_with_bounding_boxes(pdf_document: fitz.Document) -> tuple[str, 
         page_width = page_rect.width
         page_height = page_rect.height
         
+        # Skip pages with zero dimensions
+        if page_width <= 0 or page_height <= 0:
+            logger.warning(f"Page {page_num + 1} has invalid dimensions: {page_width}x{page_height}")
+            continue
+        
         # Extract text blocks for markdown
-        blocks = page.get_text("dict")
-        page_markdown = f"\n\n## Page {page_num + 1}\n\n"
-        
-        for block in blocks["blocks"]:
-            if "lines" in block:
-                for line in block["lines"]:
-                    line_text = ""
-                    for span in line["spans"]:
-                        text = span["text"].strip()
-                        if text:
-                            line_text += text + " "
-                    
-                    if line_text.strip():
-                        page_markdown += line_text.strip() + "\n"
-        
-        markdown_text += page_markdown
+        try:
+            blocks = page.get_text("dict")
+            page_markdown = f"\n\n## Page {page_num + 1}\n\n"
+            
+            for block in blocks.get("blocks", []):
+                if "lines" in block:
+                    for line in block["lines"]:
+                        line_text = ""
+                        for span in line.get("spans", []):
+                            text = span.get("text", "").strip()
+                            if text:
+                                line_text += text + " "
+                        
+                        if line_text.strip():
+                            page_markdown += line_text.strip() + "\n"
+            
+            markdown_text += page_markdown
+            
+        except Exception as e:
+            logger.warning(f"Error extracting markdown from page {page_num + 1}: {str(e)}")
+            markdown_text += f"\n\n## Page {page_num + 1}\n\n[Error extracting text: {str(e)}]\n"
         
         # Extract word-level bounding boxes
-        words = page.get_text("words")
-        for word_info in words:
-            x0, y0, x1, y1, word_text, block_no, line_no, word_no = word_info
-            
-            # Normalize coordinates to 0-1 range
-            normalized_bbox = {
-                "x0": x0 / page_width,
-                "y0": y0 / page_height,
-                "x1": x1 / page_width,
-                "y1": y1 / page_height
-            }
-            
-            word_bounding_boxes.append({
-                "page": page_num + 1,
-                "text": word_text,
-                "bbox": normalized_bbox,
-                "absolute_bbox": {
-                    "x0": x0,
-                    "y0": y0,
-                    "x1": x1,
-                    "y1": y1
-                },
-                "page_dimensions": {
-                    "width": page_width,
-                    "height": page_height
-                },
-                "block_no": block_no,
-                "line_no": line_no,
-                "word_no": word_no
-            })
+        try:
+            words = page.get_text("words")
+            for word_info in words:
+                if len(word_info) >= 8:  # Ensure we have all expected fields
+                    x0, y0, x1, y1, word_text, block_no, line_no, word_no = word_info
+                    
+                    # Skip empty words
+                    if not word_text.strip():
+                        continue
+                    
+                    # Validate coordinates
+                    if x0 >= x1 or y0 >= y1:
+                        logger.warning(f"Invalid bbox for word '{word_text}' on page {page_num + 1}: {x0},{y0},{x1},{y1}")
+                        continue
+                    
+                    # Normalize coordinates to 0-1 range
+                    normalized_bbox = {
+                        "x0": max(0, min(1, x0 / page_width)),
+                        "y0": max(0, min(1, y0 / page_height)),
+                        "x1": max(0, min(1, x1 / page_width)),
+                        "y1": max(0, min(1, y1 / page_height))
+                    }
+                    
+                    word_bounding_boxes.append({
+                        "page": page_num + 1,
+                        "text": word_text,
+                        "bbox": normalized_bbox,
+                        "absolute_bbox": {
+                            "x0": x0,
+                            "y0": y0,
+                            "x1": x1,
+                            "y1": y1
+                        },
+                        "page_dimensions": {
+                            "width": page_width,
+                            "height": page_height
+                        },
+                        "block_no": block_no,
+                        "line_no": line_no,
+                        "word_no": word_no
+                    })
+                    
+        except Exception as e:
+            logger.warning(f"Error extracting bounding boxes from page {page_num + 1}: {str(e)}")
     
     return markdown_text, word_bounding_boxes
 
@@ -104,16 +133,33 @@ def process_pdf_from_s3(bucket: str, key: str) -> Dict[str, Any]:
         file_size = len(pdf_data)
         logger.info(f"PDF size: {file_size} bytes")
         
+        # Check file size limit (50MB)
+        if file_size > 50 * 1024 * 1024:
+            return {
+                "success": False,
+                "error": "PDF file too large (max 50MB)",
+                "error_type": "FileSizeLimitExceeded"
+            }
+        
         # Process PDF with PyMuPDF
         pdf_document = fitz.open(stream=pdf_data, filetype="pdf")
         
         try:
+            # Check page count limit (1000 pages)
+            page_count = len(pdf_document)
+            if page_count > 1000:
+                return {
+                    "success": False,
+                    "error": "PDF has too many pages (max 1000)",
+                    "error_type": "PageCountLimitExceeded"
+                }
+            
             # Extract text and bounding boxes
             markdown_text, word_bounding_boxes = extract_text_with_bounding_boxes(pdf_document)
             
             # Get document metadata
             metadata = pdf_document.metadata
-            page_count = len(pdf_document)
+            word_count = len(word_bounding_boxes)
             
             result = {
                 "success": True,
@@ -123,14 +169,22 @@ def process_pdf_from_s3(bucket: str, key: str) -> Dict[str, Any]:
                     "title": metadata.get("title", ""),
                     "author": metadata.get("author", ""),
                     "subject": metadata.get("subject", ""),
-                    "creator": metadata.get("creator", "")
+                    "creator": metadata.get("creator", ""),
+                    "producer": metadata.get("producer", ""),
+                    "creation_date": metadata.get("creationDate", ""),
+                    "modification_date": metadata.get("modDate", "")
                 },
                 "markdown_text": markdown_text,
                 "word_bounding_boxes": word_bounding_boxes,
-                "word_count": len(word_bounding_boxes)
+                "word_count": word_count,
+                "processing_stats": {
+                    "pages_processed": page_count,
+                    "words_extracted": word_count,
+                    "processing_time_ms": 0  # Could add timing if needed
+                }
             }
             
-            logger.info(f"Successfully processed PDF: {page_count} pages, {len(word_bounding_boxes)} words")
+            logger.info(f"Successfully processed PDF: {page_count} pages, {word_count} words")
             return result
             
         finally:
@@ -191,7 +245,12 @@ def send_webhook_notification(callback_url: str, payload: Dict[str, Any], max_re
 def send_completion_to_eventbridge(job_id: str, status: str, summary: Dict[str, Any]):
     """Send completion event to EventBridge for SQS-based workflows."""
     try:
-        eventbridge = boto3.client('events')
+        # Configure EventBridge client with LocalStack endpoint if running locally
+        eventbridge_endpoint_url = os.environ.get('AWS_ENDPOINT_URL')
+        if eventbridge_endpoint_url:
+            eventbridge = boto3.client('events', endpoint_url=eventbridge_endpoint_url)
+        else:
+            eventbridge = boto3.client('events')
         
         eventbridge.put_events(
             Entries=[
@@ -318,6 +377,18 @@ def process_single_document(params: Dict[str, Any]) -> Dict[str, Any]:
             # Re-raise for SQS error handling
             raise
     
+    return result
+
+def test_lambda_function():
+    """Test function for local development."""
+    test_event = {
+        "s3_path": "s3://test-bucket/test.pdf",
+        "job_id": "test-job-123"
+    }
+    
+    print("Testing Lambda function with sample event...")
+    result = lambda_handler(test_event, None)
+    print(f"Result: {json.dumps(result, indent=2)}")
     return result
 
 def lambda_handler(event, context):
