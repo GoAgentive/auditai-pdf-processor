@@ -1,0 +1,8 @@
+# Container-optimized requirements
+# boto3 is already available in Lambda runtime, but including for local development
+PyMuPDF==1.23.26
+boto3==1.34.0
+requests==2.31.0
+
+# Optional: Add specific versions for better reproducibility
+# pymupdf-fonts==1.0.5  # If you need specific fonts 

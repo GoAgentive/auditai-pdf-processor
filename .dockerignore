@@ -1,0 +1,43 @@
+# Git and version control
+.git
+.gitignore
+.github
+
+# Build artifacts
+build/
+*.zip
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Documentation and development files
+README.md
+DEPLOYMENT_GUIDE.md
+*.md
+
+# Development tools
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python virtual environments
+venv/
+env/
+.env
+
+# Testing
+test_*
+tests/
+.pytest_cache/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Keep only essential files for Lambda
+!index.py
+!requirements.txt
+!Dockerfile 

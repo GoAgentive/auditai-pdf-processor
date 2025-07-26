@@ -2,8 +2,10 @@ import json
 import boto3
 import fitz  # PyMuPDF
 import io
+import requests
 from typing import Dict, List, Any
 import logging
+import os
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -142,78 +144,307 @@ def process_pdf_from_s3(bucket: str, key: str) -> Dict[str, Any]:
             "error_type": type(e).__name__
         }
 
+def parse_s3_path(s3_path: str) -> tuple[str, str]:
+    """Parse S3 path into bucket and key components."""
+    if not s3_path.startswith('s3://'):
+        raise ValueError('Invalid S3 path format')
+    
+    path_parts = s3_path[5:].split('/', 1)  # Remove 's3://' prefix
+    if len(path_parts) != 2:
+        raise ValueError('Invalid S3 path format')
+    
+    return path_parts[0], path_parts[1]
+
+def store_results_in_s3(bucket: str, job_id: str, result: Dict[str, Any]) -> str:
+    """Store processing results in S3 and return the S3 path."""
+    results_key = f"processed/{job_id}/results.json"
+    
+    s3_client.put_object(
+        Bucket=bucket,
+        Key=results_key,
+        Body=json.dumps(result, indent=2),
+        ContentType='application/json'
+    )
+    
+    return f"s3://{bucket}/{results_key}"
+
+def send_webhook_notification(callback_url: str, payload: Dict[str, Any], max_retries: int = 3):
+    """Send webhook notification with retry logic."""
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(
+                callback_url, 
+                json=payload, 
+                timeout=30,
+                headers={'Content-Type': 'application/json'}
+            )
+            response.raise_for_status()
+            logger.info(f"Successfully sent webhook notification to {callback_url}")
+            return
+            
+        except requests.exceptions.RequestException as e:
+            logger.warning(f"Webhook attempt {attempt + 1} failed: {str(e)}")
+            if attempt == max_retries - 1:
+                logger.error(f"Failed to send webhook after {max_retries} attempts")
+                raise
+
+def send_completion_to_eventbridge(job_id: str, status: str, summary: Dict[str, Any]):
+    """Send completion event to EventBridge for SQS-based workflows."""
+    try:
+        eventbridge = boto3.client('events')
+        
+        eventbridge.put_events(
+            Entries=[
+                {
+                    'Source': 'pdf-processor',
+                    'DetailType': 'Document Processing Completed',
+                    'Detail': json.dumps({
+                        'jobId': job_id,
+                        'status': status,
+                        'summary': summary,
+                        'timestamp': f"{int(__import__('time').time())}"
+                    })
+                }
+            ]
+        )
+        logger.info(f"Sent completion event to EventBridge for job {job_id}")
+        
+    except Exception as e:
+        logger.error(f"Failed to send EventBridge event: {str(e)}")
+        # Don't raise - this is not critical for processing
+
+def is_sqs_event(event: Dict[str, Any]) -> bool:
+    """Check if the event is from SQS."""
+    return 'Records' in event and len(event['Records']) > 0 and event['Records'][0].get('eventSource') == 'aws:sqs'
+
+def is_api_gateway_event(event: Dict[str, Any]) -> bool:
+    """Check if the event is from API Gateway."""
+    return 'body' in event and 'headers' in event
+
+def parse_sqs_message(sqs_record: Dict[str, Any]) -> Dict[str, Any]:
+    """Parse SQS message body and extract processing parameters."""
+    try:
+        # Parse the message body
+        message_body = json.loads(sqs_record['body'])
+        
+        # Extract message attributes if present
+        message_attributes = sqs_record.get('messageAttributes', {})
+        
+        # Build processing parameters
+        params = {
+            's3_path': message_body.get('s3_path'),
+            'job_id': message_body.get('job_id'),
+            'callback_url': message_body.get('callback_url'),
+            'sqs_message_id': sqs_record['messageId'],
+            'receipt_handle': sqs_record['receiptHandle']
+        }
+        
+        # Add any additional attributes
+        for attr_name, attr_data in message_attributes.items():
+            if attr_data.get('dataType') == 'String':
+                params[attr_name] = attr_data.get('stringValue')
+        
+        return params
+        
+    except (json.JSONDecodeError, KeyError) as e:
+        logger.error(f"Failed to parse SQS message: {str(e)}")
+        raise ValueError(f"Invalid SQS message format: {str(e)}")
+
+def process_single_document(params: Dict[str, Any]) -> Dict[str, Any]:
+    """Process a single document with the given parameters."""
+    s3_path = params.get('s3_path')
+    job_id = params.get('job_id')
+    callback_url = params.get('callback_url')
+    
+    if not s3_path:
+        raise ValueError('Missing s3_path parameter')
+    
+    # Parse S3 path and process PDF
+    bucket, key = parse_s3_path(s3_path)
+    result = process_pdf_from_s3(bucket, key)
+    
+    # Handle async notification (webhook or EventBridge)
+    if job_id:
+        try:
+            # Store results in S3
+            results_s3_path = store_results_in_s3(bucket, job_id, result)
+            
+            # Prepare summary
+            summary = {
+                "page_count": result.get('document_info', {}).get('page_count'),
+                "word_count": result.get('word_count'),
+                "file_size": result.get('document_info', {}).get('file_size'),
+                "success": result['success']
+            }
+            
+            # Send webhook if callback_url provided
+            if callback_url:
+                callback_payload = {
+                    "job_id": job_id,
+                    "status": "completed" if result['success'] else "failed",
+                    "results_s3_path": results_s3_path,
+                    "summary": summary
+                }
+                
+                if not result['success']:
+                    callback_payload["error"] = result.get('error')
+                    callback_payload["error_type"] = result.get('error_type')
+                
+                send_webhook_notification(callback_url, callback_payload)
+            
+            # Always send EventBridge event for SQS-based workflows
+            send_completion_to_eventbridge(
+                job_id, 
+                "completed" if result['success'] else "failed", 
+                summary
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in async processing for job {job_id}: {str(e)}")
+            # Send failure notification
+            try:
+                if callback_url:
+                    failure_payload = {
+                        "job_id": job_id,
+                        "status": "failed",
+                        "error": f"Async processing failed: {str(e)}"
+                    }
+                    send_webhook_notification(callback_url, failure_payload)
+                
+                send_completion_to_eventbridge(job_id, "failed", {"error": str(e)})
+            except:
+                logger.error("Failed to send failure notifications")
+            
+            # Re-raise for SQS error handling
+            raise
+    
+    return result
+
 def lambda_handler(event, context):
     """
     AWS Lambda handler for PDF processing.
     
-    Expected event format:
+    Supports multiple invocation modes:
+    1. Direct invocation (backward compatibility)
+    2. API Gateway
+    3. SQS with DLQ support
+    
+    Event formats:
+    
+    Direct/API Gateway:
     {
-        "s3_path": "s3://bucket-name/path/to/file.pdf"
+        "s3_path": "s3://bucket-name/path/to/file.pdf",
+        "job_id": "optional-job-id",
+        "callback_url": "optional-callback-url"
+    }
+    
+    SQS:
+    {
+        "Records": [
+            {
+                "body": "{\"s3_path\": \"s3://bucket/file.pdf\", \"job_id\": \"123\"}",
+                "messageAttributes": {...}
+            }
+        ]
     }
     """
     try:
-        # Parse S3 path from event
-        if 'body' in event:
+        # Determine event source and parse accordingly
+        if is_sqs_event(event):
+            # SQS batch processing
+            return handle_sqs_batch(event, context)
+        
+        elif is_api_gateway_event(event):
             # API Gateway event
             body = json.loads(event['body'])
+            result = process_single_document(body)
+            
+            status_code = 200 if result['success'] else 500
+            return {
+                'statusCode': status_code,
+                'headers': {
+                    'Content-Type': 'application/json',
+                    'Access-Control-Allow-Origin': '*'
+                },
+                'body': json.dumps(result)
+            }
+        
         else:
             # Direct invocation
-            body = event
+            result = process_single_document(event)
             
-        s3_path = body.get('s3_path')
-        if not s3_path:
-            return {
-                'statusCode': 400,
-                'body': json.dumps({
-                    'error': 'Missing s3_path parameter',
-                    'expected_format': 's3://bucket-name/path/to/file.pdf'
-                })
-            }
-        
-        # Parse S3 path
-        if not s3_path.startswith('s3://'):
-            return {
-                'statusCode': 400,
-                'body': json.dumps({
-                    'error': 'Invalid S3 path format',
-                    'expected_format': 's3://bucket-name/path/to/file.pdf'
-                })
-            }
-        
-        # Extract bucket and key from S3 path
-        path_parts = s3_path[5:].split('/', 1)  # Remove 's3://' prefix
-        if len(path_parts) != 2:
-            return {
-                'statusCode': 400,
-                'body': json.dumps({
-                    'error': 'Invalid S3 path format',
-                    'expected_format': 's3://bucket-name/path/to/file.pdf'
-                })
-            }
-        
-        bucket, key = path_parts
-        
-        # Process the PDF
-        result = process_pdf_from_s3(bucket, key)
-        
-        # Return response
-        status_code = 200 if result['success'] else 500
-        return {
-            'statusCode': status_code,
-            'headers': {
-                'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
-            },
-            'body': json.dumps(result)
-        }
+            # For async mode, return minimal response
+            if event.get('job_id'):
+                return {
+                    'statusCode': 200,
+                    'body': json.dumps({
+                        'success': True,
+                        'message': 'Processing completed',
+                        'job_id': event.get('job_id')
+                    })
+                }
+            else:
+                # Sync mode - return full results
+                return {
+                    'statusCode': 200 if result['success'] else 500,
+                    'headers': {
+                        'Content-Type': 'application/json',
+                        'Access-Control-Allow-Origin': '*'
+                    },
+                    'body': json.dumps(result)
+                }
         
     except Exception as e:
         logger.error(f"Lambda handler error: {str(e)}")
-        return {
-            'statusCode': 500,
-            'body': json.dumps({
-                'success': False,
-                'error': str(e),
-                'error_type': type(e).__name__
+        
+        # Return appropriate error response based on invocation type
+        if is_sqs_event(event):
+            # For SQS, we need to raise the exception to trigger DLQ
+            raise
+        else:
+            # For direct/API Gateway, return error response
+            return {
+                'statusCode': 500,
+                'body': json.dumps({
+                    'success': False,
+                    'error': str(e),
+                    'error_type': type(e).__name__
+                })
+            }
+
+def handle_sqs_batch(event: Dict[str, Any], context) -> Dict[str, Any]:
+    """
+    Handle SQS batch processing with proper error handling for DLQ.
+    
+    Returns batch item failures for partial batch failure handling.
+    """
+    batch_item_failures = []
+    
+    for record in event['Records']:
+        try:
+            # Parse SQS message
+            params = parse_sqs_message(record)
+            job_id = params.get('job_id', 'unknown')
+            
+            logger.info(f"Processing SQS message for job {job_id}")
+            
+            # Process the document
+            result = process_single_document(params)
+            
+            logger.info(f"Successfully processed SQS message for job {job_id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to process SQS message {record['messageId']}: {str(e)}")
+            
+            # Add to batch item failures - this will cause the message to be retried
+            # After max retries, it will go to DLQ
+            batch_item_failures.append({
+                'itemIdentifier': record['messageId']
             })
-        }
+    
+    # Return batch results
+    # If all messages processed successfully, batch_item_failures will be empty
+    # If some failed, only the failed messages will be retried/sent to DLQ
+    return {
+        'batchItemFailures': batch_item_failures
+    }
