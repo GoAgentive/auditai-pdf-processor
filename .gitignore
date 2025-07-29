@@ -1,0 +1,6 @@
+# Build artifacts
+build/
+pdf-processor-lambda.zip
+
+# Smart build cache
+.build-hash

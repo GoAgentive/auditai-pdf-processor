@@ -62,7 +62,7 @@ def verify_auth_token(event) -> bool:
                 logger.info("Authentication successful")
                 return True
             else:
-                logger.error("Token mismatch")
+                logger.error("Authentication failed: token mismatch")
                 return False
                 
         except Exception as e:
@@ -293,4 +293,4 @@ def lambda_handler(event, context):
                 'error': str(e),
                 'error_type': type(e).__name__
             })
-        }
+}

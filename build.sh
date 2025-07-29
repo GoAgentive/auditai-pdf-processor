@@ -1,6 +1,8 @@
 #!/bin/bash
 
 # Build script for PDF processor Lambda
+# This is the core build logic - called by smart-build.sh for automated deployments
+# or can be run directly for force rebuilds
 set -e
 
 echo "Building PDF processor Lambda..."
@@ -9,14 +11,18 @@ echo "Building PDF processor Lambda..."
 rm -rf build/
 mkdir -p build/
 
-# Create a temporary directory for pip install
-mkdir -p build/python/lib/python3.11/site-packages/
-
-# Install dependencies to the build directory
-pip install -r requirements.txt --target build/python/lib/python3.11/site-packages/
-
-# Copy the Lambda function code
-cp index.py build/
+# Use Docker to build in Lambda-compatible environment (x86_64)
+echo "Building dependencies using Docker (Lambda Python 3.11 x86_64 environment)..."
+docker run --rm \
+  --platform linux/amd64 \
+  -v "$PWD":/var/task \
+  -w /var/task \
+  --entrypoint /bin/bash \
+  public.ecr.aws/lambda/python:3.11 \
+  -c "
+    pip install -r requirements.txt -t build/
+    cp index.py build/
+  "
 
 # Create deployment package
 cd build
