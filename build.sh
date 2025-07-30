@@ -1,38 +1,23 @@
 #!/bin/bash
 
-# Build script for PDF processor Lambda
-# This is the core build logic - called by smart-build.sh for automated deployments
-# or can be run directly for force rebuilds
+# Main build script for Lambda layers architecture
+# This script builds both the dependency layer and function code separately
 set -e
 
-echo "Building PDF processor Lambda..."
+echo "Building PDF processor Lambda with layers architecture..."
 
-# Clean up any existing build artifacts
-rm -rf build/
-mkdir -p build/
+# Build the dependencies layer first
+echo "Step 1: Building Lambda dependencies layer..."
+./build-layer.sh
 
-# Use Docker to build in Lambda-compatible environment (x86_64)
-echo "Building dependencies using Docker (Lambda Python 3.11 x86_64 environment)..."
-docker run --rm \
-  --platform linux/amd64 \
-  -v "$PWD":/var/task \
-  -w /var/task \
-  --entrypoint /bin/bash \
-  public.ecr.aws/lambda/python:3.11 \
-  -c "
-    pip install -r requirements.txt -t build/
-    cp index.py build/
-  "
+# Build the function code package
+echo "Step 2: Building Lambda function code..."
+./build-function.sh
 
-# Create deployment package
-cd build
-zip -r ../pdf-processor-lambda.zip .
-cd ..
-
-echo "Lambda deployment package created: pdf-processor-lambda.zip"
-echo "Size: $(ls -lh pdf-processor-lambda.zip | awk '{print $5}')"
-
-# Clean up build directory
-rm -rf build/
-
-echo "Build complete!"
+echo ""
+echo "=========================================="
+echo "Lambda packages built successfully!"
+echo "=========================================="
+echo "Dependencies layer: dependencies-layer.zip ($(ls -lh dependencies-layer.zip | awk '{print $5}'))"
+echo "Function code: function-code.zip ($(ls -lh function-code.zip | awk '{print $5}'))"
+echo ""
