@@ -1,6 +1,9 @@
 # Build artifacts
 build/
 pdf-processor-lambda.zip
+dependencies-layer.zip
+function-code.zip
+*.zip
 
 # Smart build cache
 .build-hash
