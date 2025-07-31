@@ -156,66 +156,6 @@ class PDFProcessingResponse:
         return result
 
 s3_client = boto3.client('s3')
-secrets_client = boto3.client('secretsmanager')
-
-def verify_auth_token(event) -> bool:
-    """
-    Verify the authorization token from the request.
-    
-    Returns:
-        bool: True if authentication is valid, False otherwise
-    """
-    try:
-        # Get authorization header from API Gateway event or direct invocation
-        auth_header = None
-        
-        if 'headers' in event:
-            # API Gateway event
-            headers = event.get('headers', {})
-            auth_header = headers.get('Authorization') or headers.get('authorization')
-        elif 'authorization' in event:
-            # Direct invocation with auth field
-            auth_header = event.get('authorization')
-        
-        if not auth_header:
-            print("ERROR: No authorization header found")
-            return False
-        
-        # Extract token from "Bearer <token>" format
-        if auth_header.startswith('Bearer '):
-            token = auth_header[7:]  # Remove "Bearer " prefix
-        else:
-            token = auth_header
-        
-        # Get the expected token from AWS Secrets Manager
-        secret_id = os.environ.get('AUTH_SECRET_ID')
-        if not secret_id:
-            print("ERROR: AUTH_SECRET_ID environment variable not set")
-            return False
-        
-        try:
-            response = secrets_client.get_secret_value(SecretId=secret_id)
-            secret_data = json.loads(response['SecretString'])
-            expected_token = secret_data.get('accessKey')
-            
-            if not expected_token:
-                print("ERROR: No accessKey found in secret")
-                return False
-            
-            # Compare tokens
-            if token == expected_token:
-                return True
-            else:
-                print("ERROR: Authentication failed: token mismatch")
-                return False
-                
-        except Exception as e:
-            print(f"ERROR: Failed to retrieve or validate secret: {str(e)}")
-            return False
-            
-    except Exception as e:
-        print(f"ERROR: Authentication verification failed: {str(e)}")
-        return False
 
 
 def extract_text_with_bounding_boxes(pdf_document: fitz.Document, pdf_data: bytes) -> tuple[List[WordBoundingBox], List[PageData]]:
@@ -369,24 +309,10 @@ def lambda_handler(event, context):
     
     Expected event format:
     {
-        "s3_path": "s3://bucket-name/path/to/file.pdf",
-        "authorization": "Bearer <token>"  // Optional: can be in headers instead
+        "s3_path": "s3://bucket-name/path/to/file.pdf"
     }
     """
     try:
-        # Verify authentication first
-        if not verify_auth_token(event):
-            return {
-                'statusCode': 403,
-                'headers': {
-                    'Content-Type': 'application/json',
-                },
-                'body': json.dumps({
-                    'success': False,
-                    'error': 'Authentication failed',
-                    'error_type': 'AuthenticationError'
-                })
-            }
         # Parse S3 path from event
         if 'body' in event:
             # API Gateway event
