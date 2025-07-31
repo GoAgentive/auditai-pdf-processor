@@ -1,7 +1,7 @@
 import json
 import boto3
 import fitz  # PyMuPDF
-# pymupdf4llm removed - using PyMuPDF's built-in table detection instead
+import pymupdf4llm 
 import io
 from typing import Dict, List, Any, Optional, Union
 import logging
@@ -128,12 +128,11 @@ class PageData:
 
 class PDFProcessingResponse:
     def __init__(self, success: bool, document_info: DocumentInfo, 
-                 markdown_text: str, word_bounding_boxes: List[WordBoundingBox],
+                 word_bounding_boxes: List[WordBoundingBox],
                  word_count: int, structured_data: List[PageData],
                  error: Optional[str] = None, error_type: Optional[str] = None):
         self.success = success
         self.document_info = document_info
-        self.markdown_text = markdown_text
         self.word_bounding_boxes = word_bounding_boxes
         self.word_count = word_count
         self.structured_data = structured_data
@@ -144,7 +143,6 @@ class PDFProcessingResponse:
         result = {
             "success": bool(self.success),
             "document_info": self.document_info.to_dict(),
-            "markdown_text": str(self.markdown_text),
             "word_bounding_boxes": [wb.to_dict() for wb in self.word_bounding_boxes],
             "word_count": int(self.word_count),
             "structured_data": [pd.to_dict() for pd in self.structured_data]
@@ -219,123 +217,40 @@ def verify_auth_token(event) -> bool:
         print(f"ERROR: Authentication verification failed: {str(e)}")
         return False
 
-def extract_tables_from_page(page: fitz.Page) -> list:
-    """Extract tables from a page using PyMuPDF's find_tables method."""
-    try:
-        table_finder = page.find_tables(
-            strategy="text",  # Use text positioning for borderless tables
-            min_words_vertical=2,
-            min_words_horizontal=1,
-            text_tolerance=5
-        )
-        return table_finder.tables
-    except Exception as table_error:
-        print(f"Table detection failed on page {page.number + 1}: {str(table_error)}")
-        return []
 
-def extract_text_with_bounding_boxes(pdf_document: fitz.Document, pdf_data: bytes) -> tuple[str, List[WordBoundingBox], List[PageData]]:
+def extract_text_with_bounding_boxes(pdf_document: fitz.Document, pdf_data: bytes) -> tuple[List[WordBoundingBox], List[PageData]]:
     """
-    Extract structured markdown and word-level bounding boxes from PDF.
-    Uses PyMuPDF's built-in table detection for better document structure recognition.
+    Extract page-level markdown and word-level bounding boxes from PDF.
+    Uses pymupdf4llm for page-level markdown generation only.
     
     Returns:
-        tuple: (markdown_text, word_bounding_boxes, structured_page_data)
+        tuple: (word_bounding_boxes, structured_page_data)
     """
-    structured_page_data = []
-    
-    # Use PyMuPDF's built-in table detection for better structured extraction
     try:
-        markdown_text = ""
+        # Generate page-level markdown for structured data
+        structured_page_data = []
         
-        # Process each page and extract tables + text (single pass)
         for page_num in range(len(pdf_document)):
             page = pdf_document[page_num]
-            page_markdown = f"\n## Page {page_num + 1}\n\n"
             
-            # Extract tables using our helper function
-            tables = extract_tables_from_page(page)
+            # Generate markdown for this specific page
+            page_markdown = pymupdf4llm.to_markdown(page)
             
-            # Convert tables to markdown and structured format simultaneously
-            page_tables = []
-            if tables:
-                for table_idx, table in enumerate(tables):
-                    table_data = table.extract()
-                    
-                    if table_data:
-                        # Generate markdown for this table
-                        page_markdown += f"\n### Table {table_idx + 1}\n\n"
-                        
-                        # Add table headers (first row)
-                        if len(table_data) > 0:
-                            headers = table_data[0]
-                            page_markdown += "| " + " | ".join(str(cell).strip() for cell in headers) + " |\n"
-                            page_markdown += "|" + "|".join("---" for _ in headers) + "|\n"
-                            
-                            # Add table rows
-                            for row in table_data[1:]:
-                                page_markdown += "| " + " | ".join(str(cell).strip() for cell in row) + " |\n"
-                        
-                        page_markdown += "\n"
-                        
-                        # Also create structured format for this table
-                        if hasattr(table.bbox, 'x0'):
-                            bbox = [table.bbox.x0, table.bbox.y0, table.bbox.x1, table.bbox.y1]
-                        else:
-                            bbox = list(table.bbox)
-                        
-                        page_tables.append({
-                            'rows': len(table_data),
-                            'cols': len(table_data[0]) if table_data else 0,
-                            'bbox': bbox,
-                            'data': table_data
-                        })
-            
-            # Extract non-table text from the page
-            page_text = ""
-            text_blocks = page.get_text("dict")["blocks"]
-            
-            for block in text_blocks:
-                if "lines" in block:  # Text block
-                    block_rect = fitz.Rect(block["bbox"])
-                    
-                    # Check if this block overlaps with any table
-                    overlaps_table = False
-                    for table in tables:
-                        if hasattr(table.bbox, 'intersects'):
-                            table_rect = table.bbox
-                        else:
-                            table_rect = fitz.Rect(table.bbox)
-                        
-                        if block_rect.intersects(table_rect):
-                            overlaps_table = True
-                            break
-                    
-                    # If not part of a table, add to both markdown and structured text
-                    if not overlaps_table:
-                        for line in block["lines"]:
-                            line_text = ""
-                            for span in line["spans"]:
-                                line_text += span["text"]
-                            if line_text.strip():
-                                page_markdown += line_text.strip() + "\n"
-                                page_text += line_text + "\n"
-            
-            markdown_text += page_markdown
-            
-            # Create structured page data
+            # Create page data with markdown content
             page_data_obj = PageData(
                 metadata={},
                 toc_items=[],
-                tables=page_tables,
-                images=[],  # Not processing images in this implementation
+                tables=[],  # Tables are handled in markdown
+                images=[],
                 graphics=[],
-                text=page_text.strip(),
+                text=page_markdown.strip(),  # Page-specific markdown
                 words=[]   # Word extraction handled separately
             )
             structured_page_data.append(page_data_obj)
+            
     except Exception as e:
-        print(f"ERROR: PyMuPDF table extraction failed: {str(e)}")
-        raise e  # Re-raise the exception instead of falling back
+        print(f"ERROR: PDF extraction failed: {str(e)}")
+        raise e
     
     # Extract word-level bounding boxes (still using PyMuPDF for precision)
     word_bounding_boxes = []
@@ -384,7 +299,7 @@ def extract_text_with_bounding_boxes(pdf_document: fitz.Document, pdf_data: byte
             )
             word_bounding_boxes.append(word_bbox)
     
-    return markdown_text, word_bounding_boxes, structured_page_data
+    return word_bounding_boxes, structured_page_data
 
 def process_pdf_from_s3(bucket: str, key: str) -> Dict[str, Any]:
     """
@@ -410,7 +325,7 @@ def process_pdf_from_s3(bucket: str, key: str) -> Dict[str, Any]:
         
         try:
             # Extract text and bounding boxes
-            markdown_text, word_bounding_boxes, structured_data = extract_text_with_bounding_boxes(pdf_document, pdf_data)
+            word_bounding_boxes, structured_data = extract_text_with_bounding_boxes(pdf_document, pdf_data)
             
             # Get document metadata
             metadata = pdf_document.metadata
@@ -430,7 +345,6 @@ def process_pdf_from_s3(bucket: str, key: str) -> Dict[str, Any]:
             response = PDFProcessingResponse(
                 success=True,
                 document_info=document_info,
-                markdown_text=str(markdown_text),
                 word_bounding_boxes=word_bounding_boxes,
                 word_count=int(len(word_bounding_boxes)),
                 structured_data=structured_data
