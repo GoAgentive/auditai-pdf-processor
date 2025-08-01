@@ -21,6 +21,10 @@ EOF
 
 # Use Docker to build in Lambda-compatible environment (x86_64)
 echo "Building layer dependencies using Docker (Lambda Python 3.11 x86_64 environment)..."
+echo "Checking Docker availability..."
+docker --version || { echo "ERROR: Docker not available!"; exit 1; }
+
+echo "Starting Docker build..."
 docker run --rm \
   --platform linux/amd64 \
   -v "$PWD":/var/task \
@@ -72,12 +76,22 @@ docker run --rm \
       find botocore/data/ -name 'examples-*.json' -delete 2>/dev/null || true
       find botocore/data/ -name 'waiters-*.json' -delete 2>/dev/null || true
     fi
-  "
+  " || { echo "ERROR: Docker build failed!"; exit 1; }
 
 # Create layer deployment package
+if [ ! -d "layer-build" ]; then
+    echo "ERROR: layer-build directory not found! Docker build likely failed."
+    exit 1
+fi
+
 cd layer-build
-zip -r ../dependencies-layer.zip .
+zip -r ../dependencies-layer.zip . || { echo "ERROR: Failed to create zip file!"; exit 1; }
 cd ..
+
+if [ ! -f "dependencies-layer.zip" ]; then
+    echo "ERROR: dependencies-layer.zip was not created!"
+    exit 1
+fi
 
 echo "Lambda layer package created: dependencies-layer.zip"
 echo "Size: $(ls -lh dependencies-layer.zip | awk '{print $5}')"
