@@ -26,7 +26,13 @@ docker run --rm \
   --entrypoint /bin/bash \
   public.ecr.aws/lambda/python:3.11 \
   -c "
-    yum install -y gcc gcc-c++ make
+    yum install -y gcc gcc-c++ make zip
+    echo '=== Docker Debug Info ==='
+    pwd
+    ls -la
+    echo '=== Checking for requirements.txt ==='
+    ls -la requirements.txt || echo 'requirements.txt not found!'
+    echo '=== Installing dependencies ==='
     pip install -r requirements.txt -t layer-build/python/ --no-cache-dir
     
     # Remove unnecessary files to reduce layer size
