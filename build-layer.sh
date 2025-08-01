@@ -15,6 +15,7 @@ mkdir -p layer-build/python/
 # Use service-specific boto3 installation to reduce package size significantly
 cat > layer-requirements.txt << EOF
 PyMuPDF==1.24.14
+pymupdf4llm>=0.0.5
 boto3[s3,secretsmanager]==1.34.0
 EOF
 
@@ -27,6 +28,7 @@ docker run --rm \
   --entrypoint /bin/bash \
   public.ecr.aws/lambda/python:3.11 \
   -c "
+    yum install -y gcc gcc-c++ make
     pip install -r layer-requirements.txt -t layer-build/python/ --no-cache-dir
     
     # Remove unnecessary files to reduce layer size

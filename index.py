@@ -161,27 +161,31 @@ s3_client = boto3.client('s3')
 def extract_text_with_bounding_boxes(pdf_document: fitz.Document, pdf_data: bytes) -> tuple[List[WordBoundingBox], List[PageData]]:
     """
     Extract page-level markdown and word-level bounding boxes from PDF.
-    Uses pymupdf4llm for page-level markdown generation only.
+    Uses pymupdf4llm with page_chunks=True for proper page-level markdown generation.
     
     Returns:
         tuple: (word_bounding_boxes, structured_page_data)
     """
     try:
+        # Generate page-level markdown using page_chunks=True
+        page_chunks = pymupdf4llm.to_markdown(pdf_document, page_chunks=True)
+        
         # Generate page-level markdown for structured data
         structured_page_data = []
         
-        for page_num in range(len(pdf_document)):
-            page = pdf_document[page_num]
-            
-            # Generate markdown for this specific page
-            page_markdown = pymupdf4llm.to_markdown(page)
+        for page_chunk in page_chunks:
+            # Each page_chunk is a dict with 'text' and metadata
+            page_markdown = page_chunk.get('text', '')
+            page_metadata = page_chunk.get('metadata', {})
+            page_tables = page_chunk.get('tables', [])
+            page_images = page_chunk.get('images', [])
             
             # Create page data with markdown content
             page_data_obj = PageData(
-                metadata={},
+                metadata=page_metadata,
                 toc_items=[],
-                tables=[],  # Tables are handled in markdown
-                images=[],
+                tables=page_tables,
+                images=[],  # Will be processed separately for bounding boxes
                 graphics=[],
                 text=page_markdown.strip(),  # Page-specific markdown
                 words=[]   # Word extraction handled separately
