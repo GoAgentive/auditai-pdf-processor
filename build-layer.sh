@@ -11,13 +11,7 @@ echo "Building Lambda Layer for PDF processor dependencies..."
 rm -rf layer-build/
 mkdir -p layer-build/python/
 
-# Create requirements file for layer dependencies only
-# Use service-specific boto3 installation to reduce package size significantly
-cat > layer-requirements.txt << EOF
-PyMuPDF==1.24.14
-pymupdf4llm>=0.0.5
-boto3[s3,secretsmanager]==1.34.0
-EOF
+# Use existing requirements.txt file for layer dependencies
 
 # Use Docker to build in Lambda-compatible environment (x86_64)
 echo "Building layer dependencies using Docker (Lambda Python 3.11 x86_64 environment)..."
@@ -33,7 +27,7 @@ docker run --rm \
   public.ecr.aws/lambda/python:3.11 \
   -c "
     yum install -y gcc gcc-c++ make
-    pip install -r layer-requirements.txt -t layer-build/python/ --no-cache-dir
+    pip install -r requirements.txt -t layer-build/python/ --no-cache-dir
     
     # Remove unnecessary files to reduce layer size
     cd layer-build/python/
@@ -96,8 +90,7 @@ fi
 echo "Lambda layer package created: dependencies-layer.zip"
 echo "Size: $(ls -lh dependencies-layer.zip | awk '{print $5}')"
 
-# Clean up build directory and temp files
+# Clean up build directory
 rm -rf layer-build/
-rm -f layer-requirements.txt
 
 echo "Layer build complete!"
