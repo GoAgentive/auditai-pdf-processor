@@ -30,7 +30,7 @@ docker run --rm \
     yum install -y gcc gcc-c++ make zip
     echo '=== Installing hardcoded dependencies ==='
     pip install \
-        PyMuPDF==1.26.3 \
+        PyMuPDF==1.24.14 \
         pymupdf4llm>=0.0.5 \
         boto3==1.34.0 \
         -t layer-build/python/ --no-cache-dir
