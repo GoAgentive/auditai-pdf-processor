@@ -19,9 +19,10 @@ echo "Checking Docker availability..."
 docker --version || { echo "ERROR: Docker not available!"; exit 1; }
 
 echo "Starting Docker build..."
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 docker run --rm \
   --platform linux/amd64 \
-  -v "$PWD":/var/task \
+  -v "$SCRIPT_DIR":/var/task \
   -w /var/task \
   --entrypoint /bin/bash \
   public.ecr.aws/lambda/python:3.11 \
