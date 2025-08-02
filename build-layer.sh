@@ -11,7 +11,7 @@ echo "Building Lambda Layer for PDF processor dependencies..."
 rm -rf layer-build/
 mkdir -p layer-build/python/
 
-# Use existing requirements.txt file for layer dependencies
+# Dependencies are hardcoded below to avoid Docker volume mounting issues
 
 # Use Docker to build in Lambda-compatible environment (x86_64)
 echo "Building layer dependencies using Docker (Lambda Python 3.11 x86_64 environment)..."
@@ -28,13 +28,12 @@ docker run --rm \
   public.ecr.aws/lambda/python:3.11 \
   -c "
     yum install -y gcc gcc-c++ make zip
-    echo '=== Docker Debug Info ==='
-    pwd
-    ls -la
-    echo '=== Checking for requirements.txt ==='
-    ls -la requirements.txt || echo 'requirements.txt not found!'
-    echo '=== Installing dependencies ==='
-    pip install -r requirements.txt -t layer-build/python/ --no-cache-dir
+    echo '=== Installing hardcoded dependencies ==='
+    pip install \
+        PyMuPDF==1.26.3 \
+        pymupdf4llm>=0.0.5 \
+        boto3==1.34.0 \
+        -t layer-build/python/ --no-cache-dir
     
     # Remove unnecessary files to reduce layer size
     cd layer-build/python/
