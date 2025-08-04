@@ -20,47 +20,57 @@ docker --version || { echo "ERROR: Docker not available!"; exit 1; }
 
 echo "Starting Docker build..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Try Docker build first, but with better volume handling
 docker run --rm \
   --platform linux/amd64 \
-  -v "$SCRIPT_DIR":/var/task \
-  -w /var/task \
+  -v "$SCRIPT_DIR":/host \
+  -w /tmp/build \
   --entrypoint /bin/bash \
   public.ecr.aws/lambda/python:3.11 \
   -c "
     yum install -y gcc gcc-c++ make zip
     echo '=== Installing hardcoded dependencies ==='
     echo 'Current working directory:' \$(pwd)
-    echo 'Creating layer-build/python directory...'
-    mkdir -p layer-build/python/
+    echo 'Creating build directory...'
+    mkdir -p /tmp/build/python/
     
     pip install \
         PyMuPDF==1.24.14 \
         pymupdf4llm>=0.0.5 \
         boto3==1.34.0 \
-        -t layer-build/python/ --no-cache-dir
+        -t /tmp/build/python/ --no-cache-dir
     
     echo '=== Checking installation results ==='
-    ls -la layer-build/
-    ls -la layer-build/python/ | head -20
+    ls -la /tmp/build/
+    ls -la /tmp/build/python/ | head -20
     echo 'Directory size:'
-    du -sh layer-build/python/
+    du -sh /tmp/build/python/
     
-    # Basic cleanup - skip aggressive optimizations that cause permission issues
-    cd layer-build/python/
-    
-    # Only do essential cleanup that typically works
+    # Basic cleanup
+    cd /tmp/build/python/
     find . -name '*.pyc' -delete 2>/dev/null || true
     find . -name '*.pyo' -delete 2>/dev/null || true
     
-    # Skip other cleanup operations to avoid permission issues in CI
-    echo 'Skipping detailed cleanup to avoid permission issues in Docker/CI environment'
+    echo '=== Copying to host mount ==='
+    cd /tmp/build
+    # Create the host directory
+    mkdir -p /host/layer-build/
+    # Copy with proper permissions
+    cp -r python/ /host/layer-build/
+    # Fix permissions for the copied files
+    chmod -R 755 /host/layer-build/python/ 2>/dev/null || true
     
-    echo '=== Final directory check ==='
-    cd /var/task
-    ls -la layer-build/python/ | head -10
-    echo 'Final directory size:'
-    du -sh layer-build/python/
-  " || { echo "ERROR: Docker build failed!"; exit 1; }
+    echo '=== Verifying host copy ==='
+    ls -la /host/layer-build/
+    ls -la /host/layer-build/python/ | head -10
+    du -sh /host/layer-build/python/
+  " || { 
+    echo "ERROR: Docker build failed! Trying fallback method..."
+    chmod +x build-layer-no-docker.sh
+    ./build-layer-no-docker.sh
+    exit $?
+  }
 
 # Create layer deployment package
 if [ ! -d "layer-build" ]; then
@@ -94,6 +104,16 @@ echo "Size in bytes: $(stat -c%s dependencies-layer.zip 2>/dev/null || stat -f%z
 
 echo "=== Verifying zip contents ==="
 unzip -l dependencies-layer.zip | head -20
+
+# Copy to Pulumi build directory (following Pulumi best practices)
+echo "=== Copying to Pulumi build directory ==="
+PULUMI_BUILD_DIR="../../.pulumi-config/build"
+mkdir -p "$PULUMI_BUILD_DIR"
+cp dependencies-layer.zip "$PULUMI_BUILD_DIR/"
+cp function-code.zip "$PULUMI_BUILD_DIR/" 2>/dev/null || echo "function-code.zip not found yet"
+
+echo "Files copied to Pulumi build directory:"
+ls -la "$PULUMI_BUILD_DIR/"
 
 # Note: Build directory cleanup should be handled by caller to avoid permission issues
 # when running in Docker environments (Docker creates files as root)

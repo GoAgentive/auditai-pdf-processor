@@ -21,6 +21,15 @@ cd ..
 echo "Lambda function package created: function-code.zip"
 echo "Size: $(ls -lh function-code.zip | awk '{print $5}')"
 
+# Copy to Pulumi build directory (following Pulumi best practices)
+echo "=== Copying to Pulumi build directory ==="
+PULUMI_BUILD_DIR="../../.pulumi-config/build"
+mkdir -p "$PULUMI_BUILD_DIR"
+cp function-code.zip "$PULUMI_BUILD_DIR/"
+
+echo "Function code copied to Pulumi build directory:"
+ls -la "$PULUMI_BUILD_DIR/"
+
 # Clean up build directory
 rm -rf function-build/
 

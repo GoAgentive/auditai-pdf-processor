@@ -61,6 +61,15 @@ echo "Fallback Lambda layer package created: dependencies-layer.zip"
 echo "Size: $(ls -lh dependencies-layer.zip | awk '{print $5}')"
 echo "WARNING: This layer was built without Docker and may not be fully compatible with Lambda runtime"
 
+# Copy to Pulumi build directory (following Pulumi best practices)
+echo "=== Copying to Pulumi build directory ==="
+PULUMI_BUILD_DIR="../../.pulumi-config/build"
+mkdir -p "$PULUMI_BUILD_DIR"
+cp dependencies-layer.zip "$PULUMI_BUILD_DIR/"
+
+echo "Files copied to Pulumi build directory:"
+ls -la "$PULUMI_BUILD_DIR/"
+
 # Cleanup
 rm -rf layer-build/
 
