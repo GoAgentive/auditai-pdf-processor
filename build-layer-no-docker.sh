@@ -10,14 +10,14 @@ echo "WARNING: This may not be fully compatible with Lambda's Python 3.11 runtim
 
 # Clean up any existing build artifacts
 rm -rf layer-build/
-mkdir -p layer-build/python/
+mkdir -p layer-build/python/lib/python3.11/site-packages/
 
 echo "Installing dependencies locally..."
 pip3 install \
     PyMuPDF==1.24.14 \
     pymupdf4llm>=0.0.5 \
     boto3==1.34.0 \
-    -t layer-build/python/ --no-cache-dir || { 
+    -t layer-build/python/lib/python3.11/site-packages/ --no-cache-dir || { 
         echo "ERROR: pip install failed!"
         echo "Trying with --user and manual copy..."
         pip3 install --user \
@@ -30,17 +30,18 @@ pip3 install \
         USER_SITE=$(python3 -c "import site; print(site.USER_SITE)")
         if [ -d "$USER_SITE" ]; then
             echo "Copying from user site-packages: $USER_SITE"
-            cp -r "$USER_SITE"/* layer-build/python/ 2>/dev/null || true
+            mkdir -p layer-build/python/lib/python3.11/site-packages/
+            cp -r "$USER_SITE"/* layer-build/python/lib/python3.11/site-packages/ 2>/dev/null || true
         fi
     }
 
 # Basic cleanup
-cd layer-build/python/
+cd layer-build/python/lib/python3.11/site-packages/
 find . -name '*.pyc' -delete 2>/dev/null || true
 find . -name '*.pyo' -delete 2>/dev/null || true
 find . -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
 
-cd ../..
+cd ../../../../..
 
 # Create layer deployment package
 if [ ! -d "layer-build" ]; then
@@ -49,7 +50,7 @@ if [ ! -d "layer-build" ]; then
 fi
 
 cd layer-build
-zip -r ../dependencies-layer.zip . || { echo "ERROR: Failed to create zip file!"; exit 1; }
+zip -r ../dependencies-layer.zip python/ || { echo "ERROR: Failed to create zip file!"; exit 1; }
 cd ..
 
 if [ ! -f "dependencies-layer.zip" ]; then
