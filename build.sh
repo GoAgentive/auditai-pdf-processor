@@ -8,7 +8,11 @@ echo "Building PDF processor Lambda with layers architecture..."
 
 # Build the dependencies layer first
 echo "Step 1: Building Lambda dependencies layer..."
-./build-layer.sh
+if ! ./build-layer.sh; then
+    echo "WARNING: Docker-based build failed, trying fallback method..."
+    chmod +x build-layer-no-docker.sh
+    ./build-layer-no-docker.sh
+fi
 
 # Build the function code package
 echo "Step 2: Building Lambda function code..."

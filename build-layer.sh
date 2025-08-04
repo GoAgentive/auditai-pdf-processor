@@ -29,11 +29,21 @@ docker run --rm \
   -c "
     yum install -y gcc gcc-c++ make zip
     echo '=== Installing hardcoded dependencies ==='
+    echo 'Current working directory:' \$(pwd)
+    echo 'Creating layer-build/python directory...'
+    mkdir -p layer-build/python/
+    
     pip install \
         PyMuPDF==1.24.14 \
         pymupdf4llm>=0.0.5 \
         boto3==1.34.0 \
         -t layer-build/python/ --no-cache-dir
+    
+    echo '=== Checking installation results ==='
+    ls -la layer-build/
+    ls -la layer-build/python/ | head -20
+    echo 'Directory size:'
+    du -sh layer-build/python/
     
     # Basic cleanup - skip aggressive optimizations that cause permission issues
     cd layer-build/python/
@@ -44,6 +54,12 @@ docker run --rm \
     
     # Skip other cleanup operations to avoid permission issues in CI
     echo 'Skipping detailed cleanup to avoid permission issues in Docker/CI environment'
+    
+    echo '=== Final directory check ==='
+    cd /var/task
+    ls -la layer-build/python/ | head -10
+    echo 'Final directory size:'
+    du -sh layer-build/python/
   " || { echo "ERROR: Docker build failed!"; exit 1; }
 
 # Create layer deployment package
@@ -52,9 +68,18 @@ if [ ! -d "layer-build" ]; then
     exit 1
 fi
 
+echo "=== Pre-zip directory check ==="
+echo "layer-build contents:"
+ls -la layer-build/
+echo "layer-build/python contents:"
+ls -la layer-build/python/ | head -10
+echo "layer-build/python size:"
+du -sh layer-build/python/
+
 # Note: Permission fix for Docker-created files handled by caller
 
 cd layer-build
+echo "=== Creating zip from directory: $(pwd) ==="
 zip -r ../dependencies-layer.zip . || { echo "ERROR: Failed to create zip file!"; exit 1; }
 cd ..
 
@@ -65,6 +90,10 @@ fi
 
 echo "Lambda layer package created: dependencies-layer.zip"
 echo "Size: $(ls -lh dependencies-layer.zip | awk '{print $5}')"
+echo "Size in bytes: $(stat -c%s dependencies-layer.zip 2>/dev/null || stat -f%z dependencies-layer.zip)"
+
+echo "=== Verifying zip contents ==="
+unzip -l dependencies-layer.zip | head -20
 
 # Note: Build directory cleanup should be handled by caller to avoid permission issues
 # when running in Docker environments (Docker creates files as root)
