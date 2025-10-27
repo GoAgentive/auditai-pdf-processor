@@ -326,6 +326,8 @@ def lambda_handler(event, context):
             body = event
             
         s3_path = body.get('s3_path')
+        logger.info("Received s3_path: %s", s3_path)
+
         if not s3_path:
             return {
                 'statusCode': 400,
