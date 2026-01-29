@@ -1,7 +1,7 @@
 import json
 import boto3
 import fitz  # PyMuPDF
-import pymupdf4llm 
+import pymupdf4llm
 import io
 from typing import Dict, List, Any, Optional, Union
 import logging
@@ -10,6 +10,10 @@ import os
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Log library versions at module load time
+print(f"PyMuPDF (fitz) version: {fitz.version}")
+print(f"pymupdf4llm version: {pymupdf4llm.__version__}")
 
 # Response type definitions for PDF processing
 class BoundingBox:

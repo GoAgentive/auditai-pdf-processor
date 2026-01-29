@@ -21,33 +21,37 @@ echo "Starting Docker build..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Try Docker build first, with correct Lambda layer structure
+# Using Python 3.12 (Amazon Linux 2023) which has glibc 2.34, compatible with PyMuPDF 1.26.x wheels
 docker run --rm \
   --platform linux/amd64 \
   -v "$SCRIPT_DIR":/host \
   -w /tmp/build \
   --entrypoint /bin/bash \
-  public.ecr.aws/lambda/python:3.11 \
+  public.ecr.aws/lambda/python:3.12 \
   -c "
-    yum install -y gcc gcc-c++ make zip
-    echo '=== Installing hardcoded dependencies ==='
+    dnf install -y gcc gcc-c++ make zip
+    echo '=== Installing dependencies ==='
     echo 'Current working directory:' \$(pwd)
     echo 'Creating Lambda layer directory structure...'
-    mkdir -p /tmp/build/python/lib/python3.11/site-packages/
-    
+    mkdir -p /tmp/build/python/lib/python3.12/site-packages/
+
+    # Python 3.12 on Amazon Linux 2023 has glibc 2.34
+    # PyMuPDF 1.26.x wheels require glibc 2.28+ (manylinux_2_28)
+    # This combination allows pre-built wheels to work
     pip install \
-        PyMuPDF==1.24.14 \
-        pymupdf4llm>=0.0.5 \
+        PyMuPDF==1.26.6 \
+        pymupdf4llm==0.2.9 \
         boto3==1.34.0 \
-        -t /tmp/build/python/lib/python3.11/site-packages/ --no-cache-dir
+        -t /tmp/build/python/lib/python3.12/site-packages/ --no-cache-dir
     
     echo '=== Checking installation results ==='
     ls -la /tmp/build/
-    ls -la /tmp/build/python/lib/python3.11/site-packages/ | head -20
+    ls -la /tmp/build/python/lib/python3.12/site-packages/ | head -20
     echo 'Directory size:'
     du -sh /tmp/build/python/
     
     # Basic cleanup
-    cd /tmp/build/python/lib/python3.11/site-packages/
+    cd /tmp/build/python/lib/python3.12/site-packages/
     find . -name '*.pyc' -delete 2>/dev/null || true
     find . -name '*.pyo' -delete 2>/dev/null || true
     
