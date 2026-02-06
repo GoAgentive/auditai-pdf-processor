@@ -13,7 +13,7 @@ rm -rf layer-build/
 # Dependencies are hardcoded below to avoid Docker volume mounting issues
 
 # Use Docker to build in Lambda-compatible environment (x86_64)
-echo "Building layer dependencies using Docker (Lambda Python 3.11 x86_64 environment)..."
+echo "Building layer dependencies using Docker (Lambda Python 3.12 x86_64 environment)..."
 echo "Checking Docker availability..."
 docker --version || { echo "ERROR: Docker not available!"; exit 1; }
 

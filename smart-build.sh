@@ -12,9 +12,9 @@ LAMBDA_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 HASH_FILE="$LAMBDA_DIR/.build-hash"
 ZIP_FILE="$LAMBDA_DIR/pdf-processor-lambda.zip"
 
-# Calculate hash of all source files
+# Calculate hash of all source files (including build scripts to catch runtime version changes)
 calculate_source_hash() {
-    find "$LAMBDA_DIR" -name "*.py" -o -name "requirements.txt" -o -name "Dockerfile" | \
+    find "$LAMBDA_DIR" -maxdepth 1 \( -name "*.py" -o -name "requirements.txt" -o -name "Dockerfile" -o -name "build*.sh" \) | \
     sort | \
     xargs cat | \
     shasum -a 256 | \

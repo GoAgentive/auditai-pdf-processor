@@ -6,7 +6,7 @@
 set -e
 
 echo "Building Lambda Layer WITHOUT Docker (fallback method)..."
-echo "WARNING: This may not be fully compatible with Lambda's Python 3.11 runtime"
+echo "WARNING: This may not be fully compatible with Lambda's Python 3.12 runtime"
 
 # Clean up any existing build artifacts
 rm -rf layer-build/
