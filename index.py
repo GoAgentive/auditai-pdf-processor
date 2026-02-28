@@ -6,6 +6,7 @@ import io
 from typing import Dict, List, Any, Optional, Union
 import logging
 import os
+from botocore.exceptions import ClientError
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -172,6 +173,8 @@ def build_structured_error_payload(
     is_retryable: Optional[bool] = None,
     is_timeout: bool = False,
     error_reference: Optional[str] = None,
+    processing_stage: Optional[str] = None,
+    route_metadata: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Build backward-compatible + structured OCR error payloads.
@@ -200,8 +203,239 @@ def build_structured_error_payload(
         payload["error_reference"] = str(error_reference)
     if error_detail:
         payload["error_detail"] = str(error_detail)
+    if processing_stage:
+        payload["processing_stage"] = str(processing_stage)
+    if route_metadata:
+        payload.update(route_metadata)
 
     return payload
+
+
+def build_route_metadata(
+    *,
+    processed_with_pymupdf: bool,
+    route_outcome: str,
+    fallback_to_external_ocr_recommended: bool,
+) -> Dict[str, Any]:
+    return {
+        "was_sent_to_ocr": True,
+        "ocr_service": "lambda_ocr",
+        "processing_provider": "pymupdf",
+        "processed_with_pymupdf": bool(processed_with_pymupdf),
+        "external_ocr_used": False,
+        "route_outcome": str(route_outcome),
+        "fallback_to_external_ocr_recommended": bool(fallback_to_external_ocr_recommended),
+    }
+
+
+def _is_timeout_error(type_name: str, detail_lower: str) -> bool:
+    return (
+        type_name in {"TimeoutError", "ReadTimeoutError", "ConnectTimeoutError"}
+        or "timed out" in detail_lower
+        or "timeout" in detail_lower
+        or "task timed out" in detail_lower
+    )
+
+
+def _is_memory_error(type_name: str, detail_lower: str) -> bool:
+    return type_name == "MemoryError" or "out of memory" in detail_lower
+
+
+def classify_processing_exception(error: Exception, stage: str) -> Dict[str, Any]:
+    detail = str(error)
+    detail_lower = detail.lower()
+    type_name = type(error).__name__
+
+    if stage == "s3_download":
+        if isinstance(error, ClientError):
+            aws_code = error.response.get("Error", {}).get("Code", "")
+
+            if aws_code in {"NoSuchKey", "404", "NotFound"}:
+                return {
+                    "error_code": "OCR_LAMBDA_S3_OBJECT_NOT_FOUND",
+                    "error_summary": "S3 object not found",
+                    "error_category": "validation",
+                    "is_retryable": False,
+                    "is_timeout": False,
+                    "fallback_to_external_ocr_recommended": False,
+                    "processed_with_pymupdf": False,
+                }
+            if aws_code == "NoSuchBucket":
+                return {
+                    "error_code": "OCR_LAMBDA_S3_BUCKET_NOT_FOUND",
+                    "error_summary": "S3 bucket not found",
+                    "error_category": "validation",
+                    "is_retryable": False,
+                    "is_timeout": False,
+                    "fallback_to_external_ocr_recommended": False,
+                    "processed_with_pymupdf": False,
+                }
+            if aws_code in {"AccessDenied", "403"}:
+                return {
+                    "error_code": "OCR_LAMBDA_S3_ACCESS_DENIED",
+                    "error_summary": "S3 access denied",
+                    "error_category": "permission",
+                    "is_retryable": False,
+                    "is_timeout": False,
+                    "fallback_to_external_ocr_recommended": False,
+                    "processed_with_pymupdf": False,
+                }
+            if _is_timeout_error(type_name, detail_lower):
+                return {
+                    "error_code": "OCR_LAMBDA_S3_TIMEOUT",
+                    "error_summary": "S3 download timed out",
+                    "error_category": "timeout",
+                    "is_retryable": True,
+                    "is_timeout": True,
+                    "fallback_to_external_ocr_recommended": True,
+                    "processed_with_pymupdf": False,
+                }
+
+        if _is_timeout_error(type_name, detail_lower):
+            return {
+                "error_code": "OCR_LAMBDA_S3_TIMEOUT",
+                "error_summary": "S3 download timed out",
+                "error_category": "timeout",
+                "is_retryable": True,
+                "is_timeout": True,
+                "fallback_to_external_ocr_recommended": True,
+                "processed_with_pymupdf": False,
+            }
+
+        return {
+            "error_code": "OCR_LAMBDA_S3_DOWNLOAD_FAILED",
+            "error_summary": "S3 download failed",
+            "error_category": "runtime",
+            "is_retryable": True,
+            "is_timeout": False,
+            "fallback_to_external_ocr_recommended": False,
+            "processed_with_pymupdf": False,
+        }
+
+    if stage == "open_pdf":
+        if "encrypted" in detail_lower:
+            return {
+                "error_code": "OCR_LAMBDA_PDF_ENCRYPTED",
+                "error_summary": "PDF is encrypted",
+                "error_category": "validation",
+                "is_retryable": False,
+                "is_timeout": False,
+                "fallback_to_external_ocr_recommended": False,
+                "processed_with_pymupdf": True,
+            }
+        if "empty file" in detail_lower or "cannot open empty document" in detail_lower:
+            return {
+                "error_code": "OCR_LAMBDA_PDF_EMPTY",
+                "error_summary": "PDF is empty",
+                "error_category": "validation",
+                "is_retryable": False,
+                "is_timeout": False,
+                "fallback_to_external_ocr_recommended": False,
+                "processed_with_pymupdf": True,
+            }
+        if (
+            "cannot open" in detail_lower
+            or "file data error" in detail_lower
+            or "no objects found" in detail_lower
+            or "is no pdf file" in detail_lower
+        ):
+            return {
+                "error_code": "OCR_LAMBDA_PDF_CORRUPT",
+                "error_summary": "PDF file is corrupted or unreadable",
+                "error_category": "validation",
+                "is_retryable": False,
+                "is_timeout": False,
+                "fallback_to_external_ocr_recommended": False,
+                "processed_with_pymupdf": True,
+            }
+        if _is_timeout_error(type_name, detail_lower):
+            return {
+                "error_code": "OCR_LAMBDA_PYMUPDF_TIMEOUT",
+                "error_summary": "PyMuPDF timed out while opening PDF",
+                "error_category": "timeout",
+                "is_retryable": True,
+                "is_timeout": True,
+                "fallback_to_external_ocr_recommended": True,
+                "processed_with_pymupdf": True,
+            }
+        if _is_memory_error(type_name, detail_lower):
+            return {
+                "error_code": "OCR_LAMBDA_PYMUPDF_MEMORY_LIMIT",
+                "error_summary": "PyMuPDF memory limit reached",
+                "error_category": "resource",
+                "is_retryable": True,
+                "is_timeout": False,
+                "fallback_to_external_ocr_recommended": True,
+                "processed_with_pymupdf": True,
+            }
+
+        return {
+            "error_code": "OCR_LAMBDA_PDF_PARSE_FAILED",
+            "error_summary": "PyMuPDF failed to parse PDF",
+            "error_category": "runtime",
+            "is_retryable": False,
+            "is_timeout": False,
+            "fallback_to_external_ocr_recommended": False,
+            "processed_with_pymupdf": True,
+        }
+
+    if _is_timeout_error(type_name, detail_lower):
+        return {
+            "error_code": "OCR_LAMBDA_PYMUPDF_TIMEOUT",
+            "error_summary": "PyMuPDF extraction timed out",
+            "error_category": "timeout",
+            "is_retryable": True,
+            "is_timeout": True,
+            "fallback_to_external_ocr_recommended": True,
+            "processed_with_pymupdf": True,
+        }
+    if _is_memory_error(type_name, detail_lower):
+        return {
+            "error_code": "OCR_LAMBDA_PYMUPDF_MEMORY_LIMIT",
+            "error_summary": "PyMuPDF memory limit reached",
+            "error_category": "resource",
+            "is_retryable": True,
+            "is_timeout": False,
+            "fallback_to_external_ocr_recommended": True,
+            "processed_with_pymupdf": True,
+        }
+
+    return {
+        "error_code": "OCR_LAMBDA_PYMUPDF_EXTRACTION_FAILED",
+        "error_summary": "PyMuPDF extraction failed",
+        "error_category": "runtime",
+        "is_retryable": True,
+        "is_timeout": False,
+        "fallback_to_external_ocr_recommended": True,
+        "processed_with_pymupdf": True,
+    }
+
+
+def build_structured_error_from_exception(
+    error: Exception,
+    stage: str,
+    *,
+    error_reference: Optional[str] = None,
+) -> Dict[str, Any]:
+    classification = classify_processing_exception(error, stage)
+    return build_structured_error_payload(
+        classification["error_code"],
+        classification["error_summary"],
+        error_type=type(error).__name__,
+        error_category=classification["error_category"],
+        error_detail=str(error),
+        is_retryable=classification["is_retryable"],
+        is_timeout=classification["is_timeout"],
+        error_reference=error_reference,
+        processing_stage=stage,
+        route_metadata=build_route_metadata(
+            processed_with_pymupdf=classification["processed_with_pymupdf"],
+            route_outcome="pymupdf_failed",
+            fallback_to_external_ocr_recommended=classification[
+                "fallback_to_external_ocr_recommended"
+            ],
+        ),
+    )
 
 
 def extract_all_graphics(
@@ -475,7 +709,9 @@ def extract_text_with_bounding_boxes(pdf_document: fitz.Document, pdf_data: byte
 
     return word_bounding_boxes, structured_page_data
 
-def process_pdf_from_s3(bucket: str, key: str, graphics_mode: str = 'full') -> Dict[str, Any]:
+def process_pdf_from_s3(
+    bucket: str, key: str, graphics_mode: str = 'full', request_id: Optional[str] = None
+) -> Dict[str, Any]:
     """
     Download PDF from S3, process it, and return results.
 
@@ -491,57 +727,75 @@ def process_pdf_from_s3(bucket: str, key: str, graphics_mode: str = 'full') -> D
         # Download PDF from S3
         response = s3_client.get_object(Bucket=bucket, Key=key)
         pdf_data = response['Body'].read()
-        
-        # Get file size for memory management
-        file_size = len(pdf_data)
-        
+    except Exception as e:
+        print(f"ERROR: Failed to download PDF from S3: {str(e)}")
+        return build_structured_error_from_exception(
+            e,
+            "s3_download",
+            error_reference=request_id,
+        )
+
+    # Get file size for memory management
+    file_size = len(pdf_data)
+
+    try:
         # Process PDF with PyMuPDF
         pdf_document = fitz.open(stream=pdf_data, filetype="pdf")
-        
-        try:
-            # Extract text and bounding boxes based on graphics_mode
-            word_bounding_boxes, structured_data = extract_text_with_bounding_boxes(pdf_document, pdf_data, graphics_mode)
-            
-            # Get document metadata
-            metadata = pdf_document.metadata
-            page_count = len(pdf_document)
-            
-            # Create structured document info
-            document_info = DocumentInfo(
-                page_count=int(page_count),
-                file_size=int(file_size),
-                title=str(metadata.get("title", "") or ""),
-                author=str(metadata.get("author", "") or ""),
-                subject=str(metadata.get("subject", "") or ""),
-                creator=str(metadata.get("creator", "") or "")
-            )
-            
-            # Create structured response
-            response = PDFProcessingResponse(
-                success=True,
-                document_info=document_info,
-                word_bounding_boxes=word_bounding_boxes,
-                word_count=int(len(word_bounding_boxes)),
-                structured_data=structured_data
-            )
-            
-            return response.to_dict()
-            
-        finally:
-            pdf_document.close()
-            
     except Exception as e:
-        detail = str(e)
-        print(f"ERROR: Error processing PDF: {detail}")
-        return build_structured_error_payload(
-            "OCR_LAMBDA_PROCESSING_FAILED",
-            "Lambda OCR processing failed",
-            error_type=type(e).__name__,
-            error_category="runtime",
-            error_detail=detail,
-            # Runtime failures are frequently transient in infra / I/O paths.
-            is_retryable=True,
+        print(f"ERROR: Failed to open PDF with PyMuPDF: {str(e)}")
+        return build_structured_error_from_exception(
+            e,
+            "open_pdf",
+            error_reference=request_id,
         )
+
+    try:
+        # Extract text and bounding boxes based on graphics_mode
+        word_bounding_boxes, structured_data = extract_text_with_bounding_boxes(
+            pdf_document, pdf_data, graphics_mode
+        )
+
+        # Get document metadata
+        metadata = pdf_document.metadata
+        page_count = len(pdf_document)
+
+        # Create structured document info
+        document_info = DocumentInfo(
+            page_count=int(page_count),
+            file_size=int(file_size),
+            title=str(metadata.get("title", "") or ""),
+            author=str(metadata.get("author", "") or ""),
+            subject=str(metadata.get("subject", "") or ""),
+            creator=str(metadata.get("creator", "") or "")
+        )
+
+        # Create structured response
+        response = PDFProcessingResponse(
+            success=True,
+            document_info=document_info,
+            word_bounding_boxes=word_bounding_boxes,
+            word_count=int(len(word_bounding_boxes)),
+            structured_data=structured_data
+        )
+        response_payload = response.to_dict()
+        response_payload["processing_stage"] = "complete"
+        response_payload.update(
+            build_route_metadata(
+                processed_with_pymupdf=True,
+                route_outcome="pymupdf_success",
+                fallback_to_external_ocr_recommended=False,
+            )
+        )
+        return response_payload
+    except Exception as e:
+        print(f"ERROR: Failed to extract PDF content with PyMuPDF: {str(e)}")
+        return build_structured_error_from_exception(
+            e,
+            "extract_pdf",
+            error_reference=request_id,
+        )
+    finally:
+        pdf_document.close()
 
 def lambda_handler(event, context):
     """
@@ -584,6 +838,12 @@ def lambda_handler(event, context):
                         error_detail="Expected format: s3://bucket-name/path/to/file.pdf",
                         is_retryable=False,
                         error_reference=request_id,
+                        processing_stage="request_validation",
+                        route_metadata=build_route_metadata(
+                            processed_with_pymupdf=False,
+                            route_outcome="ocr_request_rejected",
+                            fallback_to_external_ocr_recommended=False,
+                        ),
                     ),
                     'expected_format': 's3://bucket-name/path/to/file.pdf'
                 }),
@@ -602,6 +862,12 @@ def lambda_handler(event, context):
                         error_detail=f"Valid values: ['none', 'full', 'graphics_only']; received: {graphics_mode}",
                         is_retryable=False,
                         error_reference=request_id,
+                        processing_stage="request_validation",
+                        route_metadata=build_route_metadata(
+                            processed_with_pymupdf=False,
+                            route_outcome="ocr_request_rejected",
+                            fallback_to_external_ocr_recommended=False,
+                        ),
                     ),
                     'valid_values': ['none', 'full', 'graphics_only']
                 }),
@@ -620,6 +886,12 @@ def lambda_handler(event, context):
                         error_detail="Expected format: s3://bucket-name/path/to/file.pdf",
                         is_retryable=False,
                         error_reference=request_id,
+                        processing_stage="request_validation",
+                        route_metadata=build_route_metadata(
+                            processed_with_pymupdf=False,
+                            route_outcome="ocr_request_rejected",
+                            fallback_to_external_ocr_recommended=False,
+                        ),
                     ),
                     'expected_format': 's3://bucket-name/path/to/file.pdf'
                 }),
@@ -639,6 +911,12 @@ def lambda_handler(event, context):
                         error_detail="Expected format: s3://bucket-name/path/to/file.pdf",
                         is_retryable=False,
                         error_reference=request_id,
+                        processing_stage="request_validation",
+                        route_metadata=build_route_metadata(
+                            processed_with_pymupdf=False,
+                            route_outcome="ocr_request_rejected",
+                            fallback_to_external_ocr_recommended=False,
+                        ),
                     ),
                     'expected_format': 's3://bucket-name/path/to/file.pdf'
                 }),
@@ -647,7 +925,7 @@ def lambda_handler(event, context):
         bucket, key = path_parts
 
         # Process the PDF
-        result = process_pdf_from_s3(bucket, key, graphics_mode)
+        result = process_pdf_from_s3(bucket, key, graphics_mode, request_id=request_id)
         if not result.get('success', False) and request_id and not result.get('error_reference'):
             result['error_reference'] = str(request_id)
         
@@ -674,6 +952,12 @@ def lambda_handler(event, context):
                     error_category="runtime",
                     error_detail=detail,
                     is_retryable=True,
+                    processing_stage="request_processing",
+                    route_metadata=build_route_metadata(
+                        processed_with_pymupdf=False,
+                        route_outcome="ocr_request_failed",
+                        fallback_to_external_ocr_recommended=False,
+                    ),
                 )
             })
 }
