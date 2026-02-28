@@ -120,6 +120,14 @@ The function handles various error conditions:
 - Memory limitations
 - Processing timeouts
 
+Error responses are backward-compatible and structured:
+
+- Legacy fields: `success`, `error`, `error_type`
+- Structured fields: `error_code`, `error_category`, `error_summary`, `error_origin`, `is_timeout`
+- Optional fields: `is_retryable`, `error_reference`, `error_detail`
+
+`error` always includes a bracketed code prefix (example: `[OCR_LAMBDA_INVALID_S3_PATH] ...`) so upstream services can classify failures consistently.
+
 ## Bounding Box Coordinates
 
 The function returns both normalized (0-1) and absolute pixel coordinates:

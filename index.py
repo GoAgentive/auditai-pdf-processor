@@ -162,6 +162,48 @@ class PDFProcessingResponse:
 s3_client = boto3.client('s3')
 
 
+def build_structured_error_payload(
+    error_code: str,
+    error_summary: str,
+    *,
+    error_type: str = "RuntimeError",
+    error_category: str = "runtime",
+    error_detail: Optional[str] = None,
+    is_retryable: Optional[bool] = None,
+    is_timeout: bool = False,
+    error_reference: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Build backward-compatible + structured OCR error payloads.
+    Keeps `error`/`error_type` for existing callers while adding normalized fields.
+    """
+    error_message = f"[{error_code}] {error_summary}"
+    if error_detail:
+        error_message = f"{error_message} detail={str(error_detail)}"
+
+    payload: Dict[str, Any] = {
+        "success": False,
+        # Backward compatibility
+        "error": error_message,
+        "error_type": str(error_type),
+        # Structured metadata
+        "error_code": str(error_code),
+        "error_category": str(error_category),
+        "error_summary": str(error_summary),
+        "error_origin": "lambda_ocr",
+        "is_timeout": bool(is_timeout),
+    }
+
+    if is_retryable is not None:
+        payload["is_retryable"] = bool(is_retryable)
+    if error_reference:
+        payload["error_reference"] = str(error_reference)
+    if error_detail:
+        payload["error_detail"] = str(error_detail)
+
+    return payload
+
+
 def extract_all_graphics(
     page: fitz.Page,
     page_width: float,
@@ -489,12 +531,17 @@ def process_pdf_from_s3(bucket: str, key: str, graphics_mode: str = 'full') -> D
             pdf_document.close()
             
     except Exception as e:
-        print(f"ERROR: Error processing PDF: {str(e)}")
-        return {
-            "success": False,
-            "error": str(e),
-            "error_type": type(e).__name__
-        }
+        detail = str(e)
+        print(f"ERROR: Error processing PDF: {detail}")
+        return build_structured_error_payload(
+            "OCR_LAMBDA_PROCESSING_FAILED",
+            "Lambda OCR processing failed",
+            error_type=type(e).__name__,
+            error_category="runtime",
+            error_detail=detail,
+            # Runtime failures are frequently transient in infra / I/O paths.
+            is_retryable=True,
+        )
 
 def lambda_handler(event, context):
     """
@@ -522,15 +569,24 @@ def lambda_handler(event, context):
 
         s3_path = body.get('s3_path')
         graphics_mode = body.get('graphics_mode', 'full')
+        request_id = body.get('request_id')
         logger.info("Received s3_path: %s, graphics_mode: %s", s3_path, graphics_mode)
 
         if not s3_path:
             return {
                 'statusCode': 400,
                 'body': json.dumps({
-                    'error': 'Missing s3_path parameter',
+                    **build_structured_error_payload(
+                        "OCR_LAMBDA_MISSING_S3_PATH",
+                        "Missing s3_path parameter",
+                        error_type="ValidationError",
+                        error_category="validation",
+                        error_detail="Expected format: s3://bucket-name/path/to/file.pdf",
+                        is_retryable=False,
+                        error_reference=request_id,
+                    ),
                     'expected_format': 's3://bucket-name/path/to/file.pdf'
-                })
+                }),
             }
 
         # Validate graphics_mode
@@ -538,9 +594,17 @@ def lambda_handler(event, context):
             return {
                 'statusCode': 400,
                 'body': json.dumps({
-                    'error': 'Invalid graphics_mode parameter',
+                    **build_structured_error_payload(
+                        "OCR_LAMBDA_INVALID_GRAPHICS_MODE",
+                        "Invalid graphics_mode parameter",
+                        error_type="ValidationError",
+                        error_category="validation",
+                        error_detail=f"Valid values: ['none', 'full', 'graphics_only']; received: {graphics_mode}",
+                        is_retryable=False,
+                        error_reference=request_id,
+                    ),
                     'valid_values': ['none', 'full', 'graphics_only']
-                })
+                }),
             }
 
         # Parse S3 path
@@ -548,9 +612,17 @@ def lambda_handler(event, context):
             return {
                 'statusCode': 400,
                 'body': json.dumps({
-                    'error': 'Invalid S3 path format',
+                    **build_structured_error_payload(
+                        "OCR_LAMBDA_INVALID_S3_PATH",
+                        "Invalid S3 path format",
+                        error_type="ValidationError",
+                        error_category="validation",
+                        error_detail="Expected format: s3://bucket-name/path/to/file.pdf",
+                        is_retryable=False,
+                        error_reference=request_id,
+                    ),
                     'expected_format': 's3://bucket-name/path/to/file.pdf'
-                })
+                }),
             }
 
         # Extract bucket and key from S3 path
@@ -559,15 +631,25 @@ def lambda_handler(event, context):
             return {
                 'statusCode': 400,
                 'body': json.dumps({
-                    'error': 'Invalid S3 path format',
+                    **build_structured_error_payload(
+                        "OCR_LAMBDA_INVALID_S3_PATH",
+                        "Invalid S3 path format",
+                        error_type="ValidationError",
+                        error_category="validation",
+                        error_detail="Expected format: s3://bucket-name/path/to/file.pdf",
+                        is_retryable=False,
+                        error_reference=request_id,
+                    ),
                     'expected_format': 's3://bucket-name/path/to/file.pdf'
-                })
+                }),
             }
 
         bucket, key = path_parts
 
         # Process the PDF
         result = process_pdf_from_s3(bucket, key, graphics_mode)
+        if not result.get('success', False) and request_id and not result.get('error_reference'):
+            result['error_reference'] = str(request_id)
         
         # Return response
         status_code = 200 if result['success'] else 500
@@ -581,11 +663,17 @@ def lambda_handler(event, context):
         }
         
     except Exception as e:
+        detail = str(e)
         return {
             'statusCode': 500,
             'body': json.dumps({
-                'success': False,
-                'error': str(e),
-                'error_type': type(e).__name__
+                **build_structured_error_payload(
+                    "OCR_LAMBDA_UNHANDLED_EXCEPTION",
+                    "Unhandled lambda exception",
+                    error_type=type(e).__name__,
+                    error_category="runtime",
+                    error_detail=detail,
+                    is_retryable=True,
+                )
             })
 }
