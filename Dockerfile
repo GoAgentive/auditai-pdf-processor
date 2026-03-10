@@ -1,5 +1,5 @@
 # Use AWS Lambda Python runtime
-FROM public.ecr.aws/lambda/python:3.11
+FROM public.ecr.aws/lambda/python:3.12
 
 # Copy requirements and install dependencies
 COPY requirements.txt ${LAMBDA_TASK_ROOT}
