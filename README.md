@@ -112,13 +112,43 @@ The Lambda function is configured through Pulumi with the following settings:
 
 ## Error Handling
 
-The function handles various error conditions:
+Error responses are backward-compatible and structured:
 
-- Invalid S3 paths
-- Missing S3 objects
-- Corrupted PDF files
-- Memory limitations
-- Processing timeouts
+- Legacy fields: `success`, `error`, `error_type`
+- Structured fields: `error_code`, `error_category`, `error_summary`, `error_origin`, `is_timeout`, `processing_stage`
+- Route fields: `was_sent_to_ocr`, `ocr_service`, `processing_provider`, `processed_with_pymupdf`, `external_ocr_used`, `route_outcome`, `fallback_to_external_ocr_recommended`
+- Optional fields: `is_retryable`, `error_reference`, `error_detail`
+
+`error` always includes a bracketed code prefix (example: `[OCR_LAMBDA_INVALID_S3_PATH] ...`) so upstream services can classify failures consistently.
+
+### Error Code Matrix
+
+| Code | Stage | Meaning | Retryable | Fallback to external OCR |
+|---|---|---|---|---|
+| `OCR_LAMBDA_MISSING_S3_PATH` | `request_validation` | Required `s3_path` missing | No | No |
+| `OCR_LAMBDA_INVALID_GRAPHICS_MODE` | `request_validation` | `graphics_mode` invalid | No | No |
+| `OCR_LAMBDA_INVALID_S3_PATH` | `request_validation` | S3 URI format invalid | No | No |
+| `OCR_LAMBDA_S3_OBJECT_NOT_FOUND` | `s3_download` | Object key missing in S3 | No | No |
+| `OCR_LAMBDA_S3_BUCKET_NOT_FOUND` | `s3_download` | Bucket missing in S3 | No | No |
+| `OCR_LAMBDA_S3_ACCESS_DENIED` | `s3_download` | IAM/S3 permission denied | No | No |
+| `OCR_LAMBDA_S3_TIMEOUT` | `s3_download` | S3 read timed out | Yes | Yes |
+| `OCR_LAMBDA_S3_DOWNLOAD_FAILED` | `s3_download` | Other S3 download failure | Yes | No |
+| `OCR_LAMBDA_PDF_EMPTY` | `open_pdf` | Empty PDF payload | No | No |
+| `OCR_LAMBDA_PDF_ENCRYPTED` | `open_pdf` | Encrypted PDF not processable | No | No |
+| `OCR_LAMBDA_PDF_CORRUPT` | `open_pdf` | Corrupt/unreadable PDF bytes | No | No |
+| `OCR_LAMBDA_PDF_PARSE_FAILED` | `open_pdf` | Other PDF parse/open failure | No | No |
+| `OCR_LAMBDA_PYMUPDF_TIMEOUT` | `open_pdf`/`extract_pdf` | PyMuPDF operation timed out | Yes | Yes |
+| `OCR_LAMBDA_PYMUPDF_MEMORY_LIMIT` | `open_pdf`/`extract_pdf` | Memory pressure/OOM | Yes | Yes |
+| `OCR_LAMBDA_PYMUPDF_EXTRACTION_FAILED` | `extract_pdf` | Other PyMuPDF extraction failure | Yes | Yes |
+| `OCR_LAMBDA_UNHANDLED_EXCEPTION` | `request_processing` | Unhandled handler failure | Yes | No |
+
+### Route Semantics
+
+- `was_sent_to_ocr=true` means the request reached the OCR Lambda boundary.
+- `processed_with_pymupdf=true` means extraction executed in PyMuPDF.
+- `processed_with_pymupdf=false` means rejection/failure happened before extraction.
+- `external_ocr_used=false` in this Lambda (this component does not call Azure/OpenAI OCR directly).
+- `fallback_to_external_ocr_recommended=true` flags failures where downstream can consider Azure/OpenAI OCR fallback.
 
 ## Bounding Box Coordinates
 
