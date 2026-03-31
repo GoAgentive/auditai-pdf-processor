@@ -16,14 +16,14 @@ echo "Installing dependencies locally..."
 # Note: This fallback script may not work for PyMuPDF 1.26.x on non-AL2023 systems
 # due to glibc requirements. Use Docker-based build (build-layer.sh) for production.
 pip3 install \
-    PyMuPDF==1.26.6 \
+    PyMuPDF==1.27.2.2 \
     pymupdf4llm==0.2.9 \
     boto3==1.34.0 \
     -t layer-build/python/lib/python3.12/site-packages/ --no-cache-dir || {
         echo "ERROR: pip install failed!"
         echo "Trying with --user and manual copy..."
         pip3 install --user \
-            PyMuPDF==1.26.6 \
+            PyMuPDF==1.27.2.2 \
             pymupdf4llm==0.2.9 \
             boto3==1.34.0 \
             --no-cache-dir

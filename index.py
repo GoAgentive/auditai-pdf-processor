@@ -180,7 +180,7 @@ def extract_all_graphics(
     - Fill properties (fill color)
     """
     graphics_primitives = []
-    drawings = page.get_drawings()
+    drawings = page.get_cdrawings()
 
     for d in drawings:
         stroke_width = float(d.get("width", 0.0) or 0.0)
@@ -433,37 +433,103 @@ def extract_text_with_bounding_boxes(pdf_document: fitz.Document, pdf_data: byte
 
     return word_bounding_boxes, structured_page_data
 
-def process_pdf_from_s3(bucket: str, key: str, graphics_mode: str = 'full') -> Dict[str, Any]:
+S3_OUTPUT_THRESHOLD_PAGES = 20
+
+
+def write_results_to_s3(output_bucket: str, request_id: str, file_key: str,
+                         word_bounding_boxes: list, structured_data: list,
+                         document_info: 'DocumentInfo') -> str:
     """
-    Download PDF from S3, process it, and return results.
+    Write per-page results to S3 and return the manifest key prefix.
+
+    Each page gets its own JSON file for lazy fetching by the consumer.
+    """
+    import hashlib
+    file_key_hash = hashlib.md5(file_key.encode()).hexdigest()[:12]
+    prefix = f"_lambda_results/{request_id}/{file_key_hash}"
+
+    # Group word bounding boxes by page
+    words_by_page: Dict[int, list] = {}
+    for wb in word_bounding_boxes:
+        page_num = wb.page if hasattr(wb, 'page') else wb.get('page', 1)
+        words_by_page.setdefault(page_num, []).append(
+            wb.to_dict() if hasattr(wb, 'to_dict') else wb
+        )
+
+    page_count = len(structured_data)
+    page_keys = []
+
+    for idx, page_data in enumerate(structured_data):
+        page_num = idx + 1
+        page_obj = {
+            "structured_data": page_data.to_dict() if hasattr(page_data, 'to_dict') else page_data,
+            "word_bounding_boxes": words_by_page.get(page_num, []),
+        }
+        page_key = f"{prefix}/page_{page_num}.json"
+        s3_client.put_object(
+            Bucket=output_bucket,
+            Key=page_key,
+            Body=json.dumps(page_obj),
+            ContentType="application/json",
+        )
+        page_keys.append(page_key)
+
+    # Write manifest
+    manifest = {
+        "document_info": document_info.to_dict(),
+        "page_count": page_count,
+        "word_count": len(word_bounding_boxes),
+        "page_keys": page_keys,
+        "prefix": prefix,
+    }
+    manifest_key = f"{prefix}/manifest.json"
+    s3_client.put_object(
+        Bucket=output_bucket,
+        Key=manifest_key,
+        Body=json.dumps(manifest),
+        ContentType="application/json",
+    )
+
+    return f"s3://{output_bucket}/{manifest_key}"
+
+
+def process_pdf_from_s3(bucket: str, key: str, graphics_mode: str = 'none',
+                         output_bucket: str = None, request_id: str = None) -> Dict[str, Any]:
+    """
+    Download PDF from S3 to /tmp, process it, and return results.
+
+    For large documents (> S3_OUTPUT_THRESHOLD_PAGES pages) with an output_bucket,
+    writes per-page results to S3 and returns a lightweight manifest.
 
     Args:
         bucket: S3 bucket name
         key: S3 object key
         graphics_mode: Processing mode - 'none', 'full', or 'graphics_only'
+        output_bucket: Optional S3 bucket for per-page output (enables manifest mode)
+        request_id: Request ID for S3 output key prefix
 
     Returns:
-        dict: Processing results with markdown and bounding boxes
+        dict: Processing results (inline or manifest)
     """
+    local_path = f"/tmp/{os.path.basename(key)}"
     try:
-        # Download PDF from S3
-        response = s3_client.get_object(Bucket=bucket, Key=key)
-        pdf_data = response['Body'].read()
-        
-        # Get file size for memory management
-        file_size = len(pdf_data)
-        
-        # Process PDF with PyMuPDF
-        pdf_document = fitz.open(stream=pdf_data, filetype="pdf")
-        
+        # Download PDF to /tmp instead of RAM
+        s3_client.download_file(bucket, key, local_path)
+        file_size = os.path.getsize(local_path)
+
+        # Open from file path — PyMuPDF doesn't need the whole file in memory
+        pdf_document = fitz.open(local_path)
+
         try:
             # Extract text and bounding boxes based on graphics_mode
-            word_bounding_boxes, structured_data = extract_text_with_bounding_boxes(pdf_document, pdf_data, graphics_mode)
-            
+            word_bounding_boxes, structured_data = extract_text_with_bounding_boxes(
+                pdf_document, None, graphics_mode
+            )
+
             # Get document metadata
             metadata = pdf_document.metadata
             page_count = len(pdf_document)
-            
+
             # Create structured document info
             document_info = DocumentInfo(
                 page_count=int(page_count),
@@ -473,8 +539,24 @@ def process_pdf_from_s3(bucket: str, key: str, graphics_mode: str = 'full') -> D
                 subject=str(metadata.get("subject", "") or ""),
                 creator=str(metadata.get("creator", "") or "")
             )
-            
-            # Create structured response
+
+            # For large documents with output_bucket, write per-page to S3
+            if output_bucket and page_count > S3_OUTPUT_THRESHOLD_PAGES and request_id:
+                manifest_key = write_results_to_s3(
+                    output_bucket, request_id, key,
+                    word_bounding_boxes, structured_data, document_info
+                )
+                return {
+                    "success": True,
+                    "output_mode": "s3",
+                    "manifest_key": manifest_key,
+                    "output_bucket": output_bucket,
+                    "document_info": document_info.to_dict(),
+                    "page_count": int(page_count),
+                    "word_count": int(len(word_bounding_boxes)),
+                }
+
+            # For small documents, return inline as before
             response = PDFProcessingResponse(
                 success=True,
                 document_info=document_info,
@@ -482,12 +564,12 @@ def process_pdf_from_s3(bucket: str, key: str, graphics_mode: str = 'full') -> D
                 word_count=int(len(word_bounding_boxes)),
                 structured_data=structured_data
             )
-            
+
             return response.to_dict()
-            
+
         finally:
             pdf_document.close()
-            
+
     except Exception as e:
         print(f"ERROR: Error processing PDF: {str(e)}")
         return {
@@ -495,6 +577,10 @@ def process_pdf_from_s3(bucket: str, key: str, graphics_mode: str = 'full') -> D
             "error": str(e),
             "error_type": type(e).__name__
         }
+    finally:
+        # Clean up /tmp
+        if os.path.exists(local_path):
+            os.remove(local_path)
 
 def lambda_handler(event, context):
     """
@@ -503,12 +589,14 @@ def lambda_handler(event, context):
     Expected event format:
     {
         "s3_path": "s3://bucket-name/path/to/file.pdf",
-        "graphics_mode": "none" | "full" | "graphics_only"  (optional, default: "full")
+        "graphics_mode": "none" | "full" | "graphics_only"  (optional, default: "none"),
+        "output_bucket": "bucket-name"  (optional, enables per-page S3 output for large docs),
+        "request_id": "unique-id"  (optional, used for S3 output key prefix)
     }
 
     Graphics modes:
-    - "none": Extract text/markdown only, no graphics
-    - "full": Extract text/markdown + graphics (default)
+    - "none": Extract text/markdown only, no graphics (default)
+    - "full": Extract text/markdown + graphics
     - "graphics_only": Extract only graphics, skip text/markdown/bboxes
     """
     try:
@@ -521,8 +609,10 @@ def lambda_handler(event, context):
             body = event
 
         s3_path = body.get('s3_path')
-        graphics_mode = body.get('graphics_mode', 'full')
-        logger.info("Received s3_path: %s, graphics_mode: %s", s3_path, graphics_mode)
+        graphics_mode = body.get('graphics_mode', 'none')
+        output_bucket = body.get('output_bucket')
+        request_id = body.get('request_id')
+        logger.info("Received s3_path: %s, graphics_mode: %s, output_bucket: %s", s3_path, graphics_mode, output_bucket)
 
         if not s3_path:
             return {
@@ -567,7 +657,7 @@ def lambda_handler(event, context):
         bucket, key = path_parts
 
         # Process the PDF
-        result = process_pdf_from_s3(bucket, key, graphics_mode)
+        result = process_pdf_from_s3(bucket, key, graphics_mode, output_bucket, request_id)
         
         # Return response
         status_code = 200 if result['success'] else 500
