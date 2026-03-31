@@ -1,5 +1,5 @@
-PyMuPDF==1.26.6 # Requires glibc 2.28+ (manylinux_2_28), works with Lambda Python 3.12 (AL2023)
-pymupdf4llm==0.2.9 # Modern markdown extraction, requires PyMuPDF >= 1.26.6
+PyMuPDF==1.27.2.2 # Requires glibc 2.28+ (manylinux_2_28), works with Lambda Python 3.12 (AL2023)
+pymupdf4llm==0.2.9 # Modern markdown extraction, compatible with PyMuPDF 1.27.x
 boto3==1.34.0
 # Note: Lambda runtime must be Python 3.12+ (Amazon Linux 2023 with glibc 2.34)
 # Python 3.11 and earlier use Amazon Linux 2 with glibc 2.26, which is incompatible

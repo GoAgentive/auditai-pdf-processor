@@ -36,10 +36,10 @@ docker run --rm \
     mkdir -p /tmp/build/python/lib/python3.12/site-packages/
 
     # Python 3.12 on Amazon Linux 2023 has glibc 2.34
-    # PyMuPDF 1.26.x wheels require glibc 2.28+ (manylinux_2_28)
+    # PyMuPDF 1.27.x wheels require glibc 2.28+ (manylinux_2_28)
     # This combination allows pre-built wheels to work
     pip install \
-        PyMuPDF==1.26.6 \
+        PyMuPDF==1.27.2.2 \
         pymupdf4llm==0.2.9 \
         boto3==1.34.0 \
         -t /tmp/build/python/lib/python3.12/site-packages/ --no-cache-dir
