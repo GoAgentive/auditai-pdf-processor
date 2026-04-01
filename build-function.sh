@@ -10,8 +10,12 @@ echo "Building Lambda Function code package..."
 rm -rf function-build/
 mkdir -p function-build/
 
-# Copy only the function code (no dependencies - they're in the layer)
+# Copy all application modules (no dependencies - they're in the layer)
 cp index.py function-build/
+cp models.py function-build/
+cp extraction.py function-build/
+cp quality_check.py function-build/
+cp s3_output.py function-build/
 
 # Create function deployment package
 cd function-build
