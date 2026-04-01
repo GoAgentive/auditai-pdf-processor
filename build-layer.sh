@@ -22,9 +22,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Try Docker build first, with correct Lambda layer structure
 # Using Python 3.12 (Amazon Linux 2023) which has glibc 2.34, compatible with PyMuPDF 1.27.x wheels
-# Build for arm64 (Graviton2) — 20% cheaper Lambda pricing
 docker run --rm \
-  --platform linux/arm64 \
+  --platform linux/amd64 \
   -v "$SCRIPT_DIR":/host \
   -w /tmp/build \
   --entrypoint /bin/bash \
