@@ -9,7 +9,7 @@ HASH_FILE="$LAMBDA_DIR/.build-hash"
 
 # Calculate hash of all source files (same as smart-build.sh)
 calculate_source_hash() {
-    find "$LAMBDA_DIR" -name "*.py" -o -name "requirements.txt" -o -name "Dockerfile" | \
+    find "$LAMBDA_DIR" -name "*.py" -o -name "requirements.txt" -o -name "Dockerfile" -o -name "build-layer.sh" -o -name "build-function.sh" | \
     sort | \
     xargs cat | \
     shasum -a 256 | \
