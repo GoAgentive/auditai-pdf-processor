@@ -148,10 +148,12 @@ def process_pdf_from_s3(
             pdf_document.close()
 
     except Exception as e:
-        logger.error("Error processing PDF: %s", str(e), exc_info=True)
+        import traceback
+        tb = traceback.format_exc()
+        logger.error("Error processing PDF: %s\n%s", str(e), tb)
         return {
             "success": False,
-            "error": str(e),
+            "error": f"{str(e)} | traceback: {tb[-500:]}",
             "error_type": type(e).__name__,
         }
     finally:
@@ -243,11 +245,13 @@ def lambda_handler(event, context):
         }
 
     except Exception as e:
+        import traceback
+        tb = traceback.format_exc()
         return {
             "statusCode": 500,
             "body": json.dumps({
                 "success": False,
-                "error": str(e),
+                "error": f"{str(e)} | traceback: {tb[-500:]}",
                 "error_type": type(e).__name__,
             }),
         }

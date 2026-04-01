@@ -1,20 +1,16 @@
-"""PDF extraction using PyMuPDF with multiprocessing support.
+"""PDF extraction using PyMuPDF with subprocess-based parallelism.
 
-Uses multiprocessing.Pool to parallelize pymupdf4llm.to_markdown() across
-CPU cores. Each worker opens its own fitz.Document (PyMuPDF is not thread-safe
-but works fine across processes).
+Uses multiprocessing.Process with /tmp file IPC to avoid Lambda's
+missing /dev/shm. Each worker opens its own fitz.Document and writes
+results to a temp JSON file.
 """
 
+import json
 import logging
 import multiprocessing
 import os
+import tempfile
 from typing import Dict, List, Any, Tuple
-
-# Lambda uses Linux which defaults to fork, but set explicitly for safety
-try:
-    multiprocessing.set_start_method("fork", force=True)
-except RuntimeError:
-    pass  # Already set
 
 import fitz
 import pymupdf4llm
@@ -29,13 +25,26 @@ DEFAULT_WORKERS = int(os.environ.get("PYMUPDF_WORKERS", "6"))
 MULTIPROCESSING_THRESHOLD = 10
 
 
-def _extract_markdown_for_pages(args: Tuple[str, List[int]]) -> List[dict]:
-    """Worker function for multiprocessing. Opens its own document handle."""
-    pdf_path, page_indices = args
+def _sanitize_chunks(chunks: list) -> list:
+    """Strip non-serializable fitz objects from pymupdf4llm output.
+
+    pymupdf4llm embeds fitz.Rect in images[].bbox — we don't use image
+    metadata downstream, so drop the images list entirely. The text,
+    tables, metadata, and graphics fields are already plain Python types.
+    """
+    for chunk in chunks:
+        chunk["images"] = []
+    return chunks
+
+
+def _worker_extract_markdown(pdf_path: str, page_indices: list, output_file: str):
+    """Worker process: extract markdown for a subset of pages, write to temp file."""
     doc = fitz.open(pdf_path)
     try:
         result = pymupdf4llm.to_markdown(doc, pages=page_indices, page_chunks=True)
-        return result
+        _sanitize_chunks(result)
+        with open(output_file, "w") as f:
+            json.dump(result, f)
     finally:
         doc.close()
 
@@ -44,33 +53,59 @@ def extract_markdown_parallel(
     pdf_path: str, page_count: int, n_workers: int = DEFAULT_WORKERS
 ) -> List[dict]:
     """
-    Extract markdown from all pages using multiprocessing.
+    Extract markdown from all pages using multiprocessing.Process.
 
-    For small documents (< MULTIPROCESSING_THRESHOLD pages), runs sequentially
-    to avoid process spawn overhead.
+    Uses /tmp files for IPC instead of shared memory (Lambda has no /dev/shm).
+    For small documents, runs sequentially to avoid process spawn overhead.
     """
     if page_count < MULTIPROCESSING_THRESHOLD or n_workers <= 1:
         doc = fitz.open(pdf_path)
         try:
-            return pymupdf4llm.to_markdown(doc, page_chunks=True)
+            return _sanitize_chunks(pymupdf4llm.to_markdown(doc, page_chunks=True))
         finally:
             doc.close()
 
     # Split pages across workers
     chunk_size = page_count // n_workers
-    page_chunks = []
+    worker_args = []
+    temp_files = []
+
     for i in range(n_workers):
         start = i * chunk_size
         end = start + chunk_size if i < n_workers - 1 else page_count
-        page_chunks.append((pdf_path, list(range(start, end))))
+        page_indices = list(range(start, end))
 
-    with multiprocessing.Pool(n_workers) as pool:
-        results = pool.map(_extract_markdown_for_pages, page_chunks)
+        tf = tempfile.NamedTemporaryFile(
+            dir="/tmp", suffix=".json", delete=False, prefix=f"pymupdf_w{i}_"
+        )
+        tf.close()
+        temp_files.append(tf.name)
+        worker_args.append((pdf_path, page_indices, tf.name))
 
-    # Flatten results maintaining page order
+    # Spawn worker processes
+    processes = []
+    for args in worker_args:
+        p = multiprocessing.Process(target=_worker_extract_markdown, args=args)
+        p.start()
+        processes.append(p)
+
+    # Wait for all workers
+    for p in processes:
+        p.join(timeout=240)  # 4 min max per worker
+
+    # Collect results from temp files
     all_chunks = []
-    for chunk_result in results:
-        all_chunks.extend(chunk_result)
+    for tf_path in temp_files:
+        try:
+            with open(tf_path, "r") as f:
+                chunks = json.load(f)
+            all_chunks.extend(chunks)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            logger.error("Worker output missing or corrupt: %s (%s)", tf_path, e)
+        finally:
+            if os.path.exists(tf_path):
+                os.remove(tf_path)
+
     return all_chunks
 
 
