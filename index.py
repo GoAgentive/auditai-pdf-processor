@@ -14,7 +14,7 @@ import os
 from typing import Dict, Any
 
 from models import DocumentInfo, PDFProcessingResponse
-from quality_check import run_early_quality_check
+from quality_check import run_early_quality_check, run_markdown_quality_check
 from extraction import (
     extract_markdown_parallel,
     extract_words,
@@ -24,9 +24,13 @@ from extraction import (
 )
 from s3_output import should_use_s3_output, write_results_to_s3
 
-# Configure logging
+# Configure logging — AWS Lambda pre-configures the root logger,
+# so basicConfig() is a no-op. Explicitly set the level instead.
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+# Also ensure root logger level allows INFO through
+logging.getLogger().setLevel(logging.INFO)
 
 # Log library versions at module load time
 import pymupdf4llm
@@ -101,6 +105,22 @@ def process_pdf_from_s3(
                 # Step 3: Parallel markdown extraction
                 page_chunks = extract_markdown_parallel(local_path, page_count)
 
+                # Step 3b: Post-extraction markdown quality check
+                md_passed, md_stats = run_markdown_quality_check(page_chunks)
+                logger.info(
+                    "Markdown quality check: passed=%s, stats=%s", md_passed, md_stats
+                )
+                if not md_passed:
+                    return {
+                        "success": False,
+                        "error": md_stats.get(
+                            "failure_reason", "Markdown quality check failed"
+                        ),
+                        "error_type": "MarkdownQualityCheckFailed",
+                        "page_count": int(page_count),
+                        "word_count": 0,
+                    }
+
                 # Step 4: Word bounding boxes (fast, ~0.3s)
                 word_bounding_boxes = extract_words(pdf_document)
 
@@ -112,6 +132,13 @@ def process_pdf_from_s3(
                 structured_data = build_structured_data(
                     page_chunks, graphics_mode, per_page_graphics
                 )
+
+            logger.info(
+                "Extraction complete: pages=%d, words=%d, structured_pages=%d",
+                page_count,
+                len(word_bounding_boxes),
+                len(structured_data),
+            )
 
             # Step 6: Output
             if should_use_s3_output(page_count, output_bucket, request_id):

@@ -115,6 +115,83 @@ def run_early_quality_check(pdf_path: str) -> Tuple[bool, Dict[str, Any]]:
         doc.close()
 
 
+def run_markdown_quality_check(
+    page_chunks: list,
+) -> Tuple[bool, Dict[str, Any]]:
+    """
+    Post-extraction quality check on pymupdf4llm markdown output.
+
+    Catches the gap where word extraction passes (PDF has selectable text)
+    but pymupdf4llm produces empty/trivial markdown. This happens with
+    certain PDF structures (Type3 fonts, Chrome-generated PDFs with
+    full-page background images, XFA forms).
+
+    Returns:
+        (passed, stats) where stats contains page-level markdown metrics
+        and failure_reason (if failed).
+    """
+    if not page_chunks:
+        return False, {
+            "failure_reason": "No markdown chunks produced",
+            "pages_with_content": 0,
+            "total_md_chars": 0,
+        }
+
+    total_pages = len(page_chunks)
+    pages_with_content = 0
+    total_md_chars = 0
+    empty_pages = []
+
+    for i, chunk in enumerate(page_chunks):
+        text = (chunk.get("text") or "").strip()
+        char_count = len(text)
+        total_md_chars += char_count
+        if char_count > 0:
+            pages_with_content += 1
+        else:
+            empty_pages.append(i + 1)  # 1-indexed
+
+    md_chars_per_page = round(total_md_chars / total_pages, 1)
+
+    stats = {
+        "pages_with_content": pages_with_content,
+        "total_pages": total_pages,
+        "total_md_chars": total_md_chars,
+        "md_chars_per_page": md_chars_per_page,
+    }
+
+    # All pages produced empty markdown
+    if pages_with_content == 0:
+        stats["failure_reason"] = "All pages produced empty markdown"
+        stats["empty_pages"] = empty_pages
+        return False, stats
+
+    # Less than 20% of pages have content (for docs with 5+ pages)
+    if total_pages >= 5 and pages_with_content / total_pages < 0.2:
+        stats["failure_reason"] = (
+            f"Too few pages with markdown content "
+            f"({pages_with_content}/{total_pages})"
+        )
+        stats["empty_pages"] = empty_pages
+        return False, stats
+
+    # Total content is trivially short (less than 20 chars per page average)
+    if md_chars_per_page < 20:
+        stats["failure_reason"] = (
+            f"Markdown content too sparse ({md_chars_per_page} chars/page avg)"
+        )
+        return False, stats
+
+    if empty_pages:
+        logger.info(
+            "Markdown quality check: %d empty pages: %s",
+            len(empty_pages),
+            empty_pages[:20],
+        )
+
+    return True, stats
+
+
 def _check_gibberish(text: str) -> str | None:
     """
     Check concatenated word text for gibberish/corruption patterns.
