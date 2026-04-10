@@ -153,6 +153,14 @@ def extract_words(pdf_document: fitz.Document) -> List[WordBoundingBox]:
     return word_bounding_boxes
 
 
+def _px(p, idx):
+    """Extract coordinate from a point that may be a fitz.Point or a plain tuple."""
+    try:
+        return float(p[idx])
+    except (TypeError, KeyError):
+        return float(p.x if idx == 0 else p.y)
+
+
 def extract_graphics(pdf_document: fitz.Document) -> List[List[Dict[str, Any]]]:
     """Extract vector graphics from all pages. Returns list of per-page graphics lists."""
     all_graphics = []
@@ -177,20 +185,22 @@ def extract_graphics(pdf_document: fitz.Document) -> List[List[Dict[str, Any]]]:
 
                 if op == "l":
                     p1, p2 = item[1], item[2]
+                    p1x, p1y = _px(p1, 0), _px(p1, 1)
+                    p2x, p2y = _px(p2, 0), _px(p2, 1)
                     graphics_primitives.append(
                         {
                             "type": "line",
                             "p1": {
-                                "x": float(p1.x),
-                                "y": float(p1.y),
-                                "x_norm": float(p1.x) / page_width,
-                                "y_norm": float(p1.y) / page_height,
+                                "x": p1x,
+                                "y": p1y,
+                                "x_norm": p1x / page_width,
+                                "y_norm": p1y / page_height,
                             },
                             "p2": {
-                                "x": float(p2.x),
-                                "y": float(p2.y),
-                                "x_norm": float(p2.x) / page_width,
-                                "y_norm": float(p2.y) / page_height,
+                                "x": p2x,
+                                "y": p2y,
+                                "x_norm": p2x / page_width,
+                                "y_norm": p2y / page_height,
                             },
                             "stroke_width": stroke_width,
                             "stroke_color": list(color) if color else None,
@@ -199,32 +209,36 @@ def extract_graphics(pdf_document: fitz.Document) -> List[List[Dict[str, Any]]]:
                     )
                 elif op == "c":
                     p1, p2, p3, p4 = item[1], item[2], item[3], item[4]
+                    p1x, p1y = _px(p1, 0), _px(p1, 1)
+                    p2x, p2y = _px(p2, 0), _px(p2, 1)
+                    p3x, p3y = _px(p3, 0), _px(p3, 1)
+                    p4x, p4y = _px(p4, 0), _px(p4, 1)
                     graphics_primitives.append(
                         {
                             "type": "curve",
                             "p1": {
-                                "x": float(p1.x),
-                                "y": float(p1.y),
-                                "x_norm": float(p1.x) / page_width,
-                                "y_norm": float(p1.y) / page_height,
+                                "x": p1x,
+                                "y": p1y,
+                                "x_norm": p1x / page_width,
+                                "y_norm": p1y / page_height,
                             },
                             "p2": {
-                                "x": float(p2.x),
-                                "y": float(p2.y),
-                                "x_norm": float(p2.x) / page_width,
-                                "y_norm": float(p2.y) / page_height,
+                                "x": p2x,
+                                "y": p2y,
+                                "x_norm": p2x / page_width,
+                                "y_norm": p2y / page_height,
                             },
                             "p3": {
-                                "x": float(p3.x),
-                                "y": float(p3.y),
-                                "x_norm": float(p3.x) / page_width,
-                                "y_norm": float(p3.y) / page_height,
+                                "x": p3x,
+                                "y": p3y,
+                                "x_norm": p3x / page_width,
+                                "y_norm": p3y / page_height,
                             },
                             "p4": {
-                                "x": float(p4.x),
-                                "y": float(p4.y),
-                                "x_norm": float(p4.x) / page_width,
-                                "y_norm": float(p4.y) / page_height,
+                                "x": p4x,
+                                "y": p4y,
+                                "x_norm": p4x / page_width,
+                                "y_norm": p4y / page_height,
                             },
                             "stroke_width": stroke_width,
                             "stroke_color": list(color) if color else None,
@@ -233,18 +247,20 @@ def extract_graphics(pdf_document: fitz.Document) -> List[List[Dict[str, Any]]]:
                     )
                 elif op == "re":
                     rect = item[1]
+                    rx0, ry0 = float(rect[0]), float(rect[1])
+                    rx1, ry1 = float(rect[2]), float(rect[3])
                     graphics_primitives.append(
                         {
                             "type": "rect",
                             "bbox": {
-                                "x0": float(rect.x0),
-                                "y0": float(rect.y0),
-                                "x1": float(rect.x1),
-                                "y1": float(rect.y1),
-                                "x0_norm": float(rect.x0) / page_width,
-                                "y0_norm": float(rect.y0) / page_height,
-                                "x1_norm": float(rect.x1) / page_width,
-                                "y1_norm": float(rect.y1) / page_height,
+                                "x0": rx0,
+                                "y0": ry0,
+                                "x1": rx1,
+                                "y1": ry1,
+                                "x0_norm": rx0 / page_width,
+                                "y0_norm": ry0 / page_height,
+                                "x1_norm": rx1 / page_width,
+                                "y1_norm": ry1 / page_height,
                             },
                             "stroke_width": stroke_width,
                             "stroke_color": list(color) if color else None,
@@ -253,33 +269,37 @@ def extract_graphics(pdf_document: fitz.Document) -> List[List[Dict[str, Any]]]:
                     )
                 elif op == "qu":
                     quad = item[1]
+                    ul = quad[0] if isinstance(quad, tuple) else quad.ul
+                    ur = quad[1] if isinstance(quad, tuple) else quad.ur
+                    ll = quad[2] if isinstance(quad, tuple) else quad.ll
+                    lr = quad[3] if isinstance(quad, tuple) else quad.lr
                     graphics_primitives.append(
                         {
                             "type": "quad",
                             "points": [
                                 {
-                                    "x": float(quad.ul.x),
-                                    "y": float(quad.ul.y),
-                                    "x_norm": float(quad.ul.x) / page_width,
-                                    "y_norm": float(quad.ul.y) / page_height,
+                                    "x": _px(ul, 0),
+                                    "y": _px(ul, 1),
+                                    "x_norm": _px(ul, 0) / page_width,
+                                    "y_norm": _px(ul, 1) / page_height,
                                 },
                                 {
-                                    "x": float(quad.ur.x),
-                                    "y": float(quad.ur.y),
-                                    "x_norm": float(quad.ur.x) / page_width,
-                                    "y_norm": float(quad.ur.y) / page_height,
+                                    "x": _px(ur, 0),
+                                    "y": _px(ur, 1),
+                                    "x_norm": _px(ur, 0) / page_width,
+                                    "y_norm": _px(ur, 1) / page_height,
                                 },
                                 {
-                                    "x": float(quad.ll.x),
-                                    "y": float(quad.ll.y),
-                                    "x_norm": float(quad.ll.x) / page_width,
-                                    "y_norm": float(quad.ll.y) / page_height,
+                                    "x": _px(ll, 0),
+                                    "y": _px(ll, 1),
+                                    "x_norm": _px(ll, 0) / page_width,
+                                    "y_norm": _px(ll, 1) / page_height,
                                 },
                                 {
-                                    "x": float(quad.lr.x),
-                                    "y": float(quad.lr.y),
-                                    "x_norm": float(quad.lr.x) / page_width,
-                                    "y_norm": float(quad.lr.y) / page_height,
+                                    "x": _px(lr, 0),
+                                    "y": _px(lr, 1),
+                                    "x_norm": _px(lr, 0) / page_width,
+                                    "y_norm": _px(lr, 1) / page_height,
                                 },
                             ],
                             "stroke_width": stroke_width,
