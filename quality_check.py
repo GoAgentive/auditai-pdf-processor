@@ -21,6 +21,12 @@ MIN_WORDS_PER_PAGE = 75
 MIN_TOTAL_WORDS = 10
 MAX_WORD_LENGTH = 200  # Detect binary/corrupted content
 MIN_CONTENT_LENGTH = 50  # Minimum concatenated text length
+# Markdown must retain at least this fraction of early-check words.
+# pymupdf4llm legitimately reduces word count by ~10-20% (formatting,
+# deduplication), but anything below this threshold indicates dropped
+# text content which is unacceptable for audit evidence. Prefer
+# falling back to Azure OCR over accepting partial text.
+MIN_MARKDOWN_WORD_RATIO = 0.75
 
 
 def run_early_quality_check(pdf_path: str) -> Tuple[bool, Dict[str, Any]]:
@@ -117,6 +123,7 @@ def run_early_quality_check(pdf_path: str) -> Tuple[bool, Dict[str, Any]]:
 
 def run_markdown_quality_check(
     page_chunks: list,
+    early_word_count: int,
 ) -> Tuple[bool, Dict[str, Any]]:
     """
     Post-extraction quality check on pymupdf4llm markdown output.
@@ -124,7 +131,14 @@ def run_markdown_quality_check(
     Catches the gap where word extraction passes (PDF has selectable text)
     but pymupdf4llm produces empty/trivial markdown. This happens with
     certain PDF structures (Type3 fonts, Chrome-generated PDFs with
-    full-page background images, XFA forms).
+    full-page background images, XFA forms), where pymupdf4llm's layout
+    engine misclassifies text inside vector graphic clusters and drops it.
+
+    Args:
+        page_chunks: List of page chunk dicts from pymupdf4llm.
+        early_word_count: Word count from the early quality check
+            (fitz get_text("words")). Used to detect markdown/word mismatch
+            where raw extraction finds content but markdown drops it.
 
     Returns:
         (passed, stats) where stats contains page-level markdown metrics
@@ -181,6 +195,28 @@ def run_markdown_quality_check(
             f"Markdown content too sparse ({md_chars_per_page} chars/page avg)"
         )
         return False, stats
+
+    # Markdown/word mismatch: pymupdf4llm dropped most content.
+    # This catches cases where vector graphic clusters (e.g. invoice grid
+    # lines) cause the layout engine to skip text blocks that fall inside
+    # the cluster bounding box, even though raw word extraction finds them.
+    if early_word_count > 0:
+        md_text = " ".join(
+            (chunk.get("text") or "").strip() for chunk in page_chunks
+        )
+        md_word_count = len(md_text.split())
+        word_ratio = md_word_count / early_word_count
+        stats["early_word_count"] = early_word_count
+        stats["md_word_count"] = md_word_count
+        stats["word_ratio"] = round(word_ratio, 3)
+
+        if word_ratio < MIN_MARKDOWN_WORD_RATIO:
+            stats["failure_reason"] = (
+                f"Markdown/word mismatch: markdown produced {md_word_count} words "
+                f"but raw extraction found {early_word_count} "
+                f"(ratio {word_ratio:.1%}, threshold {MIN_MARKDOWN_WORD_RATIO:.0%})"
+            )
+            return False, stats
 
     if empty_pages:
         logger.info(

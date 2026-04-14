@@ -106,7 +106,10 @@ def process_pdf_from_s3(
                 page_chunks = extract_markdown_parallel(local_path, page_count)
 
                 # Step 3b: Post-extraction markdown quality check
-                md_passed, md_stats = run_markdown_quality_check(page_chunks)
+                md_passed, md_stats = run_markdown_quality_check(
+                    page_chunks,
+                    early_word_count=stats.get("word_count", 0),
+                )
                 logger.info(
                     "Markdown quality check: passed=%s, stats=%s", md_passed, md_stats
                 )
