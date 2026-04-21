@@ -27,6 +27,11 @@ MIN_CONTENT_LENGTH = 50  # Minimum concatenated text length
 # text content which is unacceptable for audit evidence. Prefer
 # falling back to Azure OCR over accepting partial text.
 MIN_MARKDOWN_WORD_RATIO = 0.75
+# Fraction of total characters that must belong to 21+ char runs of a single
+# repeated character for the document to be rejected as gibberish. Incidental
+# runs (leader dots in a ToC, "====" banners, signature lines) legitimately
+# hit the 21-char threshold; only reject when they dominate the content.
+MAX_REPEATED_CHAR_RATIO = 0.3
 
 
 def run_early_quality_check(pdf_path: str) -> Tuple[bool, Dict[str, Any]]:
@@ -43,7 +48,7 @@ def run_early_quality_check(pdf_path: str) -> Tuple[bool, Dict[str, Any]]:
     7. Excessive special characters (>40%)
     8. Encoding corruption patterns
     9. Fragmented text patterns
-    10. Repeated character sequences
+    10. Repeated character sequences (when they dominate the document)
 
     Returns:
         (passed, stats) where stats contains word_count, page_count,
@@ -237,8 +242,13 @@ def _check_gibberish(text: str) -> str | None:
     if len(text) < MIN_CONTENT_LENGTH:
         return None
 
-    # Repeated character sequences (e.g. "aaaaaaaaaaaaaaaaaaaaaa")
-    if re.search(r"(.)\1{20,}", text):
+    # Repeated character sequences (e.g. "aaaaaaaaaaaaaaaaaaaaaa") — only
+    # rejects when these runs dominate the document. Avoids false positives
+    # on ToC leader dots, "====" banners, and "____" signature lines.
+    repeat_chars = sum(
+        len(m.group(0)) for m in re.finditer(r"(.)\1{20,}", text)
+    )
+    if repeat_chars / len(text) > MAX_REPEATED_CHAR_RATIO:
         return "Detected repeated character sequences"
 
     # Excessive special characters (>40% of content)
