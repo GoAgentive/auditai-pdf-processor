@@ -1,0 +1,23 @@
+quality_check.py
+  45cc63d8debf3c84 30-34,51,245-251
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.3.2",
+  "base_commit_sha": "81148854383556ad447b3ca9f7a10d76f42e98e1",
+  "prompts": {
+    "45cc63d8debf3c84": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "cc66ecfc-5bb3-4d11-9ea7-271147692a58",
+        "model": "claude-opus-4-7"
+      },
+      "human_author": "Nathan-Agentive",
+      "messages": [],
+      "total_additions": 13,
+      "total_deletions": 3,
+      "accepted_lines": 13,
+      "overriden_lines": 0
+    }
+  }
+}
