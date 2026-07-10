@@ -7,3 +7,6 @@ function-code.zip
 
 # Smart build cache
 .build-hash
+# Python bytecode
+__pycache__/
+*.pyc
