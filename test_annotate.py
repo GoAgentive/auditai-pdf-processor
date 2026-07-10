@@ -419,20 +419,34 @@ def test_rotated_source_page_content_placement():
 
 
 class _FakeS3:
-    """Minimal S3 stub for handle_annotate: serves the local original and
-    captures the uploaded output in memory."""
+    """Minimal S3 stub for handle_annotate: serves the local original, serves
+    seeded objects via get_object, and captures uploads in memory."""
 
     def __init__(self, original_path):
         self._original_path = original_path
         self.put_calls = []
+        self._store = {}  # (bucket, key) -> bytes
+
+    def seed(self, bucket, key, data):
+        self._store[(bucket, key)] = data
 
     def download_file(self, bucket, key, dest):
-        shutil.copyfile(self._original_path, dest)
+        if (bucket, key) in self._store:
+            with open(dest, "wb") as fh:
+                fh.write(self._store[(bucket, key)])
+        else:
+            shutil.copyfile(self._original_path, dest)
+
+    def get_object(self, Bucket, Key):
+        import io
+
+        return {"Body": io.BytesIO(self._store[(Bucket, Key)])}
 
     def put_object(self, Bucket, Key, Body, ContentType):
         self.put_calls.append(
             {"Bucket": Bucket, "Key": Key, "Body": Body, "ContentType": ContentType}
         )
+        self._store[(Bucket, Key)] = Body
 
 
 def test_handle_annotate_end_to_end():
@@ -466,10 +480,41 @@ def test_handle_annotate_end_to_end():
     print(f"[ok] handler end-to-end: mode={payload['mode']} pages={payload['page_count']}")
 
 
+def test_handle_annotate_s3_staged():
+    """Annotation JSON + cover are read from S3 (keys), not the inline payload —
+    the 6MB sync-Invoke-limit workaround. Verifies the get_object path."""
+    import json as _json
+
+    s3 = _FakeS3(REAL_PDF)
+    s3.seed(
+        "stage-bucket",
+        "annot/uuid.json",
+        _json.dumps(_sample_annotation_data()).encode("utf-8"),
+    )
+    s3.seed("stage-bucket", "cover/uuid.pdf", _make_cover_pdf(num_pages=1))
+    body = {
+        "operation": "annotate",
+        "s3_path": "s3://in-bucket/path/to/original.pdf",
+        "output_bucket": "out-bucket",
+        "output_key": "exports/uuid.pdf",
+        "annotation_s3_path": "s3://stage-bucket/annot/uuid.json",
+        "cover_s3_path": "s3://stage-bucket/cover/uuid.pdf",
+    }
+    resp = annotate.handle_annotate(body, s3)
+    assert resp["statusCode"] == 200, resp
+    payload = _json.loads(resp["body"])
+    assert payload["page_count"] >= 2, payload  # cover + source pages
+    out_puts = [c for c in s3.put_calls if c["Key"] == "exports/uuid.pdf"]
+    assert len(out_puts) == 1, s3.put_calls
+    assert out_puts[0]["Body"][:5] == b"%PDF-", "uploaded body is not a PDF"
+    print(f"[ok] handler s3-staged: annotation+cover read from S3, pages={payload['page_count']}")
+
+
 if __name__ == "__main__":
     test_incremental_byte_prefix_and_annotations()
     test_cover_prepended_and_links_rewritten()
     test_repaired_fallback_full_clean()
     test_rotated_source_page_content_placement()
     test_handle_annotate_end_to_end()
+    test_handle_annotate_s3_staged()
     print("\nALL TESTS PASSED")

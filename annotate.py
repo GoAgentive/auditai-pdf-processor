@@ -857,8 +857,16 @@ def handle_annotate(body: Dict[str, Any], s3_client) -> Dict[str, Any]:
     s3_path = body.get("s3_path")
     output_bucket = body.get("output_bucket")
     output_key = body.get("output_key")
+    # annotation_data + cover may be passed inline OR staged in S3. S3 is
+    # preferred: the synchronous Lambda Invoke request payload is capped at 6 MB
+    # (https://docs.aws.amazon.com/lambda/latest/api/API_Invoke.html), and a
+    # font-embedding cover sheet plus a heavy annotation set can approach that.
+    # The caller (Elixir) uploads both to S3 and passes keys; inline fields are
+    # kept as a fallback for small payloads / tests.
     annotation_data = body.get("annotation_data") or {}
+    annotation_s3_path = body.get("annotation_s3_path")
     cover_pdf_base64 = body.get("cover_pdf_base64")
+    cover_s3_path = body.get("cover_s3_path")
 
     if not s3_path or not str(s3_path).startswith("s3://"):
         return {
@@ -880,8 +888,19 @@ def handle_annotate(body: Dict[str, Any], s3_client) -> Dict[str, Any]:
         bucket, key = _parse_s3_path(s3_path)
         s3_client.download_file(bucket, key, original_path)
 
+        # annotation_data: prefer the S3-staged JSON when provided.
+        if annotation_s3_path:
+            a_bucket, a_key = _parse_s3_path(annotation_s3_path)
+            annotation_data = json.loads(
+                s3_client.get_object(Bucket=a_bucket, Key=a_key)["Body"].read()
+            )
+
+        # cover: prefer the S3-staged PDF; else inline base64.
         cover_bytes = None
-        if cover_pdf_base64:
+        if cover_s3_path:
+            c_bucket, c_key = _parse_s3_path(cover_s3_path)
+            cover_bytes = s3_client.get_object(Bucket=c_bucket, Key=c_key)["Body"].read()
+        elif cover_pdf_base64:
             cover_bytes = base64.b64decode(cover_pdf_base64)
 
         mode, page_count = build_annotated_pdf(
