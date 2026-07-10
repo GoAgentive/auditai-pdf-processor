@@ -1,0 +1,32 @@
+.gitignore
+  s_23a026d9d555b1::t_13b8d2124f3bc1 9-12
+index.py
+  s_23a026d9d555b1::t_70886540ad470e 217-225
+test_annotate.py
+  s_23a026d9d555b1::t_9d608efbc1a1fa 366,368-371,373-376,378,380-388,397-401,403-411,413-416
+  s_23a026d9d555b1::t_0e2c8613d54716 1-315,421-472,474-475
+  s_23a026d9d555b1::t_61a49b3ee07b9d 316-365,367,372,377,379,389-396,402,412,417-420
+  s_23a026d9d555b1::t_42b843b4f6b28f 473
+annotate.py
+  s_23a026d9d555b1::t_c738b1a33c2c66 1-216,229-241,245,247-251,253-319,322,326-343,348,357-385,388-389,391-393,395-928
+  s_23a026d9d555b1::t_583b1be5017c54 386-387,390,394
+  s_23a026d9d555b1::t_da9ea746f643bc 217-228
+  s_23a026d9d555b1::t_7beda65f4365da 320-321,323-325,344-347,349-356
+  s_23a026d9d555b1::t_67d3b33d27edd3 242-244,246,252
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.11",
+  "base_commit_sha": "99886c275011ee61d6a3f32a87416445db566de1",
+  "prompts": {},
+  "sessions": {
+    "s_23a026d9d555b1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ccdc4477-f384-4e72-870f-9c183b5ea0fe",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nathan-Agentive <Nathan@goagentive.com>"
+    }
+  }
+}
