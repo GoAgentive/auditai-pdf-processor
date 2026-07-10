@@ -214,6 +214,15 @@ def lambda_handler(event, context):
         else:
             body = event
 
+        # Operation discriminator. Default "extract" preserves the original
+        # single-purpose behavior; "annotate" burns audit review annotations
+        # into a PDF (see annotate.py).
+        operation = body.get("operation", "extract")
+        if operation == "annotate":
+            from annotate import handle_annotate
+
+            return handle_annotate(body, s3_client)
+
         s3_path = body.get("s3_path")
         graphics_mode = body.get("graphics_mode", "none")
         output_bucket = body.get("output_bucket")
