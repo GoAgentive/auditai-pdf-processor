@@ -21,7 +21,7 @@ echo "Starting Docker build..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Try Docker build first, with correct Lambda layer structure
-# Using Python 3.12 (Amazon Linux 2023) which has glibc 2.34, compatible with PyMuPDF 1.27.x wheels
+# Using Python 3.12 (Amazon Linux 2023) which has glibc 2.34, compatible with PyMuPDF 1.28.x wheels
 docker run --rm \
   --platform linux/amd64 \
   -v "$SCRIPT_DIR":/host \
@@ -36,11 +36,12 @@ docker run --rm \
     mkdir -p /tmp/build/python/lib/python3.12/site-packages/
 
     # Python 3.12 on Amazon Linux 2023 has glibc 2.34
-    # PyMuPDF 1.27.x wheels require glibc 2.28+ (manylinux_2_28)
+    # PyMuPDF 1.28.x wheels require glibc 2.28+ (manylinux_2_28)
     # This combination allows pre-built wheels to work
+    # Versions must match requirements.txt
     pip install \
-        PyMuPDF==1.27.2.2 \
-        pymupdf4llm==0.2.9 \
+        PyMuPDF==1.27.2.3 \
+        pymupdf4llm==1.27.2.3 \
         boto3==1.34.0 \
         -t /tmp/build/python/lib/python3.12/site-packages/ --no-cache-dir
     
