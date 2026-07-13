@@ -39,22 +39,31 @@ docker run --rm \
     # PyMuPDF 1.28.x wheels require glibc 2.28+ (manylinux_2_28)
     # This combination allows pre-built wheels to work
     # Versions must match requirements.txt
+    #
+    # boto3 is deliberately NOT installed: the python3.12 Lambda runtime
+    # bundles it, and pymupdf4llm 1.27.x pulls pymupdf-layout (onnxruntime +
+    # numpy + networkx, ~130 MB unzipped) which puts the layer near the
+    # 250 MB unzipped budget for function + layers.
     pip install \
         PyMuPDF==1.27.2.3 \
         pymupdf4llm==1.27.2.3 \
-        boto3==1.34.0 \
         -t /tmp/build/python/lib/python3.12/site-packages/ --no-cache-dir
-    
+
     echo '=== Checking installation results ==='
     ls -la /tmp/build/
     ls -la /tmp/build/python/lib/python3.12/site-packages/ | head -20
     echo 'Directory size:'
     du -sh /tmp/build/python/
-    
-    # Basic cleanup
+
+    # Basic cleanup + size pruning (tests/ dirs alone are ~15 MB across
+    # numpy/networkx and are never imported at runtime)
     cd /tmp/build/python/lib/python3.12/site-packages/
     find . -name '*.pyc' -delete 2>/dev/null || true
     find . -name '*.pyo' -delete 2>/dev/null || true
+    find . -depth -type d -name '__pycache__' -exec rm -rf {} + 2>/dev/null || true
+    find . -depth -type d \( -name tests -o -name test \) -exec rm -rf {} + 2>/dev/null || true
+    echo 'Directory size after pruning:'
+    du -sh /tmp/build/python/
     
     echo '=== Creating host layer-build directory ==='
     cd /tmp/build

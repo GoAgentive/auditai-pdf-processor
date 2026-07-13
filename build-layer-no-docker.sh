@@ -18,14 +18,12 @@ echo "Installing dependencies locally..."
 pip3 install \
     PyMuPDF==1.27.2.3 \
     pymupdf4llm==1.27.2.3 \
-    boto3==1.34.0 \
     -t layer-build/python/lib/python3.12/site-packages/ --no-cache-dir || {
         echo "ERROR: pip install failed!"
         echo "Trying with --user and manual copy..."
         pip3 install --user \
             PyMuPDF==1.27.2.3 \
             pymupdf4llm==1.27.2.3 \
-            boto3==1.34.0 \
             --no-cache-dir
         
         # Find user site-packages and copy

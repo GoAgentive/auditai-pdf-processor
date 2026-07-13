@@ -4,7 +4,7 @@ pymupdf4llm==1.27.2.3 # Must version-match PyMuPDF. 0.0.18-0.2.9 silently droppe
                       # fixed upstream in 1.27.2.x. Do NOT bump to 1.28.0: it drops table cells
                       # (incl. dollar amounts) on Skia-generated invoices — verify with
                       # tests/test_extraction_regression.py before any future bump.
-boto3==1.34.0
+boto3==1.34.0 # Local dev/tests only — the Lambda layer excludes it (runtime provides boto3)
 # Note: Lambda runtime must be Python 3.12+ (Amazon Linux 2023 with glibc 2.34)
 # Python 3.11 and earlier use Amazon Linux 2 with glibc 2.26, which is incompatible
 # Development dependencies (optional for testing)
