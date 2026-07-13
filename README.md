@@ -146,10 +146,46 @@ post "/pdf/process", PDFProcessorController, :process_pdf
 
 ## Testing
 
-Use the provided test script to verify functionality:
+Regression suite (runs the same extraction + quality-gate code paths the Lambda uses):
+
+```bash
+pip install -r requirements.txt pytest
+pytest tests/
+```
+
+Local end-to-end harness — process any PDF through the Lambda's extraction logic
+and print the resulting markdown (no AWS needed):
+
+```bash
+python scripts/test_pdf_processor.py path/to/document.pdf
+```
+
+Legacy S3-based smoke script (needs real AWS credentials + an S3 path):
 
 ```bash
 python test_lambda.py
 ```
 
-Make sure to update the S3 path in the test script with an actual PDF file for testing.
+## Bumping PyMuPDF / pymupdf4llm
+
+The two pins must version-match and exist in **three places**: `requirements.txt`,
+`build-layer.sh`, and `build-layer-no-docker.sh`.
+
+pymupdf4llm has a history of silently *losing* text rather than failing loudly
+(0.0.18–0.2.9 dropped whole header blocks on Chrome/Skia-generated PDFs; 1.28.0
+drops table cells including dollar amounts). Never bump on changelog trust alone —
+verify with the token-coverage sweep:
+
+```bash
+# one venv per candidate version
+python -m venv /tmp/bump-check && /tmp/bump-check/bin/pip install -r requirements.txt pytest
+/tmp/bump-check/bin/pytest tests/                                  # must be 9/9
+/tmp/bump-check/bin/python scripts/compare_extraction_versions.py  # must print OK per file
+# optionally sweep a broader corpus:
+/tmp/bump-check/bin/python scripts/compare_extraction_versions.py path/to/more/*.pdf
+```
+
+`compare_extraction_versions.py` diffs raw PyMuPDF text (ground truth) against the
+pymupdf4llm markdown the Lambda ships and exits non-zero if any token was lost.
+Ligature collapse (e.g. "Office" → "Offce" in table cells) is reported separately
+and tolerated — it is cosmetic and present in all 1.27.x/1.28.x releases.
