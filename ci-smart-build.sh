@@ -67,7 +67,18 @@ fi
 if [ "$NEEDS_BUILD" = true ]; then
     echo "Building Lambda package..."
     ./build.sh
-    
+
+    # Fail-closed ABI guard. The layer's compiled extensions MUST match the Lambda
+    # runtime (python3.12). If the build host resolved cp313 wheels (numpy/onnxruntime),
+    # they import-fail under python3.12 and pymupdf4llm silently drops its layout mode →
+    # truncated OCR. Better to fail the build (and the deploy) than ship a broken layer.
+    if unzip -l dependencies-layer.zip | grep -oE 'cpython-3[0-9]+' | grep -qv 'cpython-312'; then
+        echo "FATAL: dependencies-layer.zip contains non-cpython-312 extensions (runtime is python3.12):"
+        unzip -l dependencies-layer.zip | grep -oE 'cpython-3[0-9]+' | sort -u
+        exit 1
+    fi
+    echo "ABI guard passed: layer compiled extensions are cpython-312 only."
+
     # Save the current hash
     echo "$CURRENT_HASH" > "$HASH_FILE"
     echo "Build complete. Hash saved: $CURRENT_HASH"
