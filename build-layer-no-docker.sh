@@ -5,35 +5,30 @@
 # Use only when Docker is not available
 set -e
 
-echo "Building Lambda Layer WITHOUT Docker (fallback method)..."
-echo "WARNING: This may not be fully compatible with Lambda's Python 3.12 runtime"
+echo "Building Lambda Layer WITHOUT Docker (cross-targeted to the Lambda runtime ABI)..."
 
 # Clean up any existing build artifacts
 rm -rf layer-build/
 mkdir -p layer-build/python/lib/python3.12/site-packages/
 
-echo "Installing dependencies locally..."
-# Note: This fallback script may not work for PyMuPDF 1.28.x on non-AL2023 systems
-# due to glibc requirements. Use Docker-based build (build-layer.sh) for production.
+echo "Installing dependencies as Lambda-runtime (python3.12 / manylinux x86_64) wheels..."
+# Cross-target the Lambda runtime ABI regardless of the build host's Python. The host
+# running this no-Docker path (notably the Pulumi deploy runner) is frequently NOT
+# python3.12 — it has shipped python3.13 — and a plain `pip install` there fetches
+# cp313 wheels for numpy/onnxruntime. Those fail to import under the python3.12 Lambda
+# runtime, so `import pymupdf.layout` is caught and pymupdf4llm silently drops to its
+# non-layout path → truncated OCR on Skia / vector-graphics PDFs.
+#
+# --only-binary=:all: forbids any host-Python source build; --abi/--implementation/
+# --python-version/--platform pin every wheel to the runtime ABI. There is intentionally
+# NO host-Python fallback: fail the build rather than ship an ABI-mismatched layer.
 pip3 install \
+    --python-version 3.12 --implementation cp --abi cp312 \
+    --platform manylinux_2_28_x86_64 --platform manylinux_2_17_x86_64 \
+    --only-binary=:all: --no-cache-dir \
     PyMuPDF==1.27.2.3 \
     pymupdf4llm==1.27.2.3 \
-    -t layer-build/python/lib/python3.12/site-packages/ --no-cache-dir || {
-        echo "ERROR: pip install failed!"
-        echo "Trying with --user and manual copy..."
-        pip3 install --user \
-            PyMuPDF==1.27.2.3 \
-            pymupdf4llm==1.27.2.3 \
-            --no-cache-dir
-        
-        # Find user site-packages and copy
-        USER_SITE=$(python3 -c "import site; print(site.USER_SITE)")
-        if [ -d "$USER_SITE" ]; then
-            echo "Copying from user site-packages: $USER_SITE"
-            mkdir -p layer-build/python/lib/python3.12/site-packages/
-            cp -r "$USER_SITE"/* layer-build/python/lib/python3.12/site-packages/ 2>/dev/null || true
-        fi
-    }
+    -t layer-build/python/lib/python3.12/site-packages/
 
 # Basic cleanup
 cd layer-build/python/lib/python3.12/site-packages/
@@ -60,7 +55,7 @@ fi
 
 echo "Fallback Lambda layer package created: dependencies-layer.zip"
 echo "Size: $(ls -lh dependencies-layer.zip | awk '{print $5}')"
-echo "WARNING: This layer was built without Docker and may not be fully compatible with Lambda runtime"
+echo "Layer built without Docker, cross-targeted to python3.12 / manylinux x86_64."
 
 # Copy to Pulumi build directory (following Pulumi best practices)
 echo "=== Copying to Pulumi build directory ==="
