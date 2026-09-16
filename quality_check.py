@@ -9,6 +9,7 @@ quality decisions.
 """
 
 import logging
+import os
 import re
 from typing import Dict, Any, Tuple
 
@@ -20,6 +21,15 @@ logger = logging.getLogger(__name__)
 MIN_WORDS_PER_PAGE = 75
 MIN_TOTAL_WORDS = 10
 MAX_WORD_LENGTH = 200  # Detect binary/corrupted content
+
+# Per-file word ceiling, mirrored from the app's OCR_MAX_WORDS_PER_FILE. A
+# document above it is refused HERE, in the cheap word pass, before the
+# parallel markdown extraction and bounding-box pass — a 2M+-word PDF would
+# otherwise run the function into its timeout and produce a response far
+# beyond the 6 MB payload limit. The app records the verdict as the terminal
+# TOO_LARGE status (downloadable, not searchable). 0 disables the check.
+MAX_TOTAL_WORDS = int(os.environ.get("OCR_MAX_WORDS_PER_FILE", "2000000"))
+TOO_MANY_WORDS_ERROR_CODE = "TOO_MANY_WORDS"
 MIN_CONTENT_LENGTH = 50  # Minimum concatenated text length
 # Markdown must retain at least this fraction of early-check words.
 # pymupdf4llm legitimately reduces word count by ~10-20% (formatting,
@@ -66,6 +76,22 @@ def run_early_quality_check(pdf_path: str) -> Tuple[bool, Dict[str, Any]]:
             words = doc[i].get_text("words")
             word_count = len(words)
             total_words += word_count
+
+            # Bail as soon as the running total crosses the ceiling: no more
+            # pages are read and no concatenated text is built.
+            if MAX_TOTAL_WORDS > 0 and total_words > MAX_TOTAL_WORDS:
+                return False, {
+                    "word_count": total_words,
+                    "page_count": page_count,
+                    "words_per_page": round(total_words / (i + 1), 1),
+                    "pages_scanned": i + 1,
+                    "error_code": TOO_MANY_WORDS_ERROR_CODE,
+                    "word_limit": MAX_TOTAL_WORDS,
+                    "failure_reason": (
+                        f"Too many words ({total_words:,} counted on the first {i + 1} "
+                        f"of {page_count} pages, limit {MAX_TOTAL_WORDS:,})"
+                    ),
+                }
 
             if word_count < MIN_WORDS_PER_PAGE:
                 pages_with_few_words += 1

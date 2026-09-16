@@ -73,13 +73,19 @@ def process_pdf_from_s3(
             logger.info("Quality check: passed=%s, stats=%s", passed, stats)
 
             if not passed:
-                return {
+                failure = {
                     "success": False,
                     "error": stats.get("failure_reason", "Quality check failed"),
                     "error_type": "QualityCheckFailed",
                     "word_count": stats.get("word_count", 0),
                     "page_count": stats.get("page_count", 0),
                 }
+                # Structured verdicts (e.g. TOO_MANY_WORDS) the app maps to a
+                # terminal status instead of falling back to Azure OCR.
+                if stats.get("error_code"):
+                    failure["error_code"] = stats["error_code"]
+                    failure["word_limit"] = stats.get("word_limit")
+                return failure
 
         # Open document for processing
         pdf_document = fitz.open(local_path)
