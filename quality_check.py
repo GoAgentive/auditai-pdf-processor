@@ -104,10 +104,15 @@ def run_early_quality_check(pdf_path: str, max_words: int | None = None) -> Tupl
             # text with a non-allocating token scan first; if that alone would
             # cross the ceiling, refuse without building the word tuples.
             if limit > 0:
-                approx = sum(1 for _ in _TOKEN_RE.finditer(page.get_text("text")))
-                if total_words + approx > limit:
-                    total_words += approx
-                    return False, _too_many_words_stats(total_words, page_count, i + 1, limit)
+                remaining = limit - total_words
+                approx = 0
+                for _ in _TOKEN_RE.finditer(page.get_text("text")):
+                    approx += 1
+                    if approx > remaining:
+                        # Stop scanning: rejection is already certain.
+                        return False, _too_many_words_stats(
+                            total_words + approx, page_count, i + 1, limit
+                        )
 
             words = page.get_text("words")
             word_count = len(words)
