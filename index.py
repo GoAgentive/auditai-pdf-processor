@@ -47,6 +47,7 @@ def process_pdf_from_s3(
     graphics_mode: str = "none",
     output_bucket: str = None,
     request_id: str = None,
+    max_words: int | None = None,
 ) -> Dict[str, Any]:
     """
     Download PDF from S3 to /tmp, process it, and return results.
@@ -69,7 +70,7 @@ def process_pdf_from_s3(
 
         # Step 2: Early quality check (fast — no pymupdf4llm)
         if graphics_mode != "graphics_only":
-            passed, stats = run_early_quality_check(local_path)
+            passed, stats = run_early_quality_check(local_path, max_words=max_words)
             logger.info("Quality check: passed=%s, stats=%s", passed, stats)
 
             if not passed:
@@ -206,7 +207,8 @@ def lambda_handler(event, context):
         "s3_path": "s3://bucket-name/path/to/file.pdf",
         "graphics_mode": "none" | "full" | "graphics_only"  (optional, default: "none"),
         "output_bucket": "bucket-name"  (optional, enables per-page S3 output for large docs),
-        "request_id": "unique-id"  (optional, used for S3 output key prefix)
+        "request_id": "unique-id"  (optional, used for S3 output key prefix),
+        "max_words": 2000000  (optional, per-file word ceiling; 0 disables; defaults to OCR_MAX_WORDS_PER_FILE)
     }
 
     Graphics modes:
@@ -224,6 +226,12 @@ def lambda_handler(event, context):
         graphics_mode = body.get("graphics_mode", "none")
         output_bucket = body.get("output_bucket")
         request_id = body.get("request_id")
+        max_words = body.get("max_words")
+        if max_words is not None:
+            try:
+                max_words = int(max_words)
+            except (TypeError, ValueError):
+                max_words = None
         logger.info(
             "Received s3_path: %s, graphics_mode: %s, output_bucket: %s",
             s3_path, graphics_mode, output_bucket,
@@ -268,7 +276,7 @@ def lambda_handler(event, context):
 
         bucket, key = path_parts
 
-        result = process_pdf_from_s3(bucket, key, graphics_mode, output_bucket, request_id)
+        result = process_pdf_from_s3(bucket, key, graphics_mode, output_bucket, request_id, max_words)
 
         status_code = 200 if result.get("success") else 500
         return {

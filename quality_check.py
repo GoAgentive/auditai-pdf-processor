@@ -44,7 +44,7 @@ MIN_MARKDOWN_WORD_RATIO = 0.75
 MAX_REPEATED_CHAR_RATIO = 0.3
 
 
-def run_early_quality_check(pdf_path: str) -> Tuple[bool, Dict[str, Any]]:
+def run_early_quality_check(pdf_path: str, max_words: int | None = None) -> Tuple[bool, Dict[str, Any]]:
     """
     Fast quality check using only word extraction (no pymupdf4llm).
 
@@ -64,6 +64,10 @@ def run_early_quality_check(pdf_path: str) -> Tuple[bool, Dict[str, Any]]:
         (passed, stats) where stats contains word_count, page_count,
         words_per_page, and failure_reason (if failed).
     """
+    # The app passes its own OCR_MAX_WORDS_PER_FILE with every invocation so the
+    # two sides can never disagree; the env default only covers direct calls.
+    limit = MAX_TOTAL_WORDS if max_words is None else int(max_words)
+
     doc = fitz.open(pdf_path)
     try:
         page_count = len(doc)
@@ -79,17 +83,17 @@ def run_early_quality_check(pdf_path: str) -> Tuple[bool, Dict[str, Any]]:
 
             # Bail as soon as the running total crosses the ceiling: no more
             # pages are read and no concatenated text is built.
-            if MAX_TOTAL_WORDS > 0 and total_words > MAX_TOTAL_WORDS:
+            if limit > 0 and total_words > limit:
                 return False, {
                     "word_count": total_words,
                     "page_count": page_count,
                     "words_per_page": round(total_words / (i + 1), 1),
                     "pages_scanned": i + 1,
                     "error_code": TOO_MANY_WORDS_ERROR_CODE,
-                    "word_limit": MAX_TOTAL_WORDS,
+                    "word_limit": limit,
                     "failure_reason": (
                         f"Too many words ({total_words:,} counted on the first {i + 1} "
-                        f"of {page_count} pages, limit {MAX_TOTAL_WORDS:,})"
+                        f"of {page_count} pages, limit {limit:,})"
                     ),
                 }
 
