@@ -44,6 +44,24 @@ MIN_MARKDOWN_WORD_RATIO = 0.75
 MAX_REPEATED_CHAR_RATIO = 0.3
 
 
+_TOKEN_RE = re.compile(r"\S+")
+
+
+def _too_many_words_stats(total_words: int, page_count: int, pages_scanned: int, limit: int) -> Dict[str, Any]:
+    return {
+        "word_count": total_words,
+        "page_count": page_count,
+        "words_per_page": round(total_words / pages_scanned, 1),
+        "pages_scanned": pages_scanned,
+        "error_code": TOO_MANY_WORDS_ERROR_CODE,
+        "word_limit": limit,
+        "failure_reason": (
+            f"Too many words ({total_words:,} counted on the first {pages_scanned} "
+            f"of {page_count} pages, limit {limit:,})"
+        ),
+    }
+
+
 def run_early_quality_check(pdf_path: str, max_words: int | None = None) -> Tuple[bool, Dict[str, Any]]:
     """
     Fast quality check using only word extraction (no pymupdf4llm).
@@ -77,25 +95,28 @@ def run_early_quality_check(pdf_path: str, max_words: int | None = None) -> Tupl
         all_word_texts = []
 
         for i in range(page_count):
-            words = doc[i].get_text("words")
+            page = doc[i]
+
+            # Cheap pre-flight for a hostile single page: `get_text("words")`
+            # materialises one tuple per word, so a page carrying millions of
+            # words can exhaust the function's memory before the ceiling is
+            # ever consulted. Estimate the page's word count from its plain
+            # text with a non-allocating token scan first; if that alone would
+            # cross the ceiling, refuse without building the word tuples.
+            if limit > 0:
+                approx = sum(1 for _ in _TOKEN_RE.finditer(page.get_text("text")))
+                if total_words + approx > limit:
+                    total_words += approx
+                    return False, _too_many_words_stats(total_words, page_count, i + 1, limit)
+
+            words = page.get_text("words")
             word_count = len(words)
             total_words += word_count
 
             # Bail as soon as the running total crosses the ceiling: no more
             # pages are read and no concatenated text is built.
             if limit > 0 and total_words > limit:
-                return False, {
-                    "word_count": total_words,
-                    "page_count": page_count,
-                    "words_per_page": round(total_words / (i + 1), 1),
-                    "pages_scanned": i + 1,
-                    "error_code": TOO_MANY_WORDS_ERROR_CODE,
-                    "word_limit": limit,
-                    "failure_reason": (
-                        f"Too many words ({total_words:,} counted on the first {i + 1} "
-                        f"of {page_count} pages, limit {limit:,})"
-                    ),
-                }
+                return False, _too_many_words_stats(total_words, page_count, i + 1, limit)
 
             if word_count < MIN_WORDS_PER_PAGE:
                 pages_with_few_words += 1
