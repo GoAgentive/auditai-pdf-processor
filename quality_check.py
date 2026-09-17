@@ -28,8 +28,36 @@ MAX_WORD_LENGTH = 200  # Detect binary/corrupted content
 # otherwise run the function into its timeout and produce a response far
 # beyond the 6 MB payload limit. The app records the verdict as the terminal
 # TOO_LARGE status (downloadable, not searchable). 0 disables the check.
-MAX_TOTAL_WORDS = int(os.environ.get("OCR_MAX_WORDS_PER_FILE", "500000"))
+DEFAULT_MAX_TOTAL_WORDS = 500000
 TOO_MANY_WORDS_ERROR_CODE = "TOO_MANY_WORDS"
+
+# The plain-text preflight tokenises with `\S+`, which splits differently
+# from PyMuPDF's word extraction on some Unicode whitespace. It is therefore
+# only allowed to refuse a page outright when its estimate is far past the
+# remaining budget; anything closer falls through to the authoritative
+# `get_text("words")` count so a document near the ceiling is never refused
+# on an approximation.
+PREFLIGHT_SAFETY_FACTOR = 4
+
+
+def parse_word_ceiling(value, default: int) -> int:
+    """Non-negative integer ceiling from an env/event value; anything else
+    (None, bool, float, negative, non-numeric, inf) falls back to `default`
+    with a warning instead of raising or silently disabling the guard."""
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError, OverflowError):
+        logger.warning("Ignoring invalid word ceiling %r; using %d", value, default)
+        return default
+    if parsed < 0:
+        logger.warning("Ignoring negative word ceiling %r; using %d", value, default)
+        return default
+    return parsed
+
+
+MAX_TOTAL_WORDS = parse_word_ceiling(os.environ.get("OCR_MAX_WORDS_PER_FILE"), DEFAULT_MAX_TOTAL_WORDS)
 MIN_CONTENT_LENGTH = 50  # Minimum concatenated text length
 # Markdown must retain at least this fraction of early-check words.
 # pymupdf4llm legitimately reduces word count by ~10-20% (formatting,
@@ -84,7 +112,7 @@ def run_early_quality_check(pdf_path: str, max_words: int | None = None) -> Tupl
     """
     # The app passes its own OCR_MAX_WORDS_PER_FILE with every invocation so the
     # two sides can never disagree; the env default only covers direct calls.
-    limit = MAX_TOTAL_WORDS if max_words is None else int(max_words)
+    limit = MAX_TOTAL_WORDS if max_words is None else parse_word_ceiling(max_words, MAX_TOTAL_WORDS)
 
     doc = fitz.open(pdf_path)
     try:
@@ -104,12 +132,14 @@ def run_early_quality_check(pdf_path: str, max_words: int | None = None) -> Tupl
             # text with a non-allocating token scan first; if that alone would
             # cross the ceiling, refuse without building the word tuples.
             if limit > 0:
-                remaining = limit - total_words
+                remaining = max(limit - total_words, 0)
+                # Refuse from the estimate only when it is unambiguously over:
+                # the estimate may over-count relative to PyMuPDF's words.
+                hard_stop = remaining * PREFLIGHT_SAFETY_FACTOR + PREFLIGHT_SAFETY_FACTOR
                 approx = 0
                 for _ in _TOKEN_RE.finditer(page.get_text("text")):
                     approx += 1
-                    if approx > remaining:
-                        # Stop scanning: rejection is already certain.
+                    if approx > hard_stop:
                         return False, _too_many_words_stats(
                             total_words + approx, page_count, i + 1, limit
                         )
