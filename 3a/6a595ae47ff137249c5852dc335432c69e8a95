@@ -1,0 +1,21 @@
+index.py
+  s_67d855aee6429b::t_07406b4ea6e9fc 211
+quality_check.py
+  s_67d855aee6429b::t_f6f6b2a5442fec 27,31
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "3a6a595ae47ff137249c5852dc335432c69e8a95",
+  "prompts": {},
+  "sessions": {
+    "s_67d855aee6429b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ebc81c9e-2582-4177-aa72-b47a1929a163",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Nathan-Agentive <Nathan@goagentive.com>"
+    }
+  }
+}
