@@ -9,6 +9,7 @@ quality decisions.
 """
 
 import logging
+import os
 import re
 from typing import Dict, Any, Tuple
 
@@ -20,6 +21,15 @@ logger = logging.getLogger(__name__)
 MIN_WORDS_PER_PAGE = 75
 MIN_TOTAL_WORDS = 10
 MAX_WORD_LENGTH = 200  # Detect binary/corrupted content
+
+# Per-file word ceiling, mirrored from the app's OCR_MAX_WORDS_PER_FILE. A
+# document above it is refused HERE, in the cheap word pass, before the
+# parallel markdown extraction and bounding-box pass — a 2M+-word PDF would
+# otherwise run the function into its timeout and produce a response far
+# beyond the 6 MB payload limit. The app records the verdict as the terminal
+# TOO_LARGE status (downloadable, not searchable). 0 disables the check.
+MAX_TOTAL_WORDS = int(os.environ.get("OCR_MAX_WORDS_PER_FILE", "2000000"))
+TOO_MANY_WORDS_ERROR_CODE = "TOO_MANY_WORDS"
 MIN_CONTENT_LENGTH = 50  # Minimum concatenated text length
 # Markdown must retain at least this fraction of early-check words.
 # pymupdf4llm legitimately reduces word count by ~10-20% (formatting,
@@ -34,7 +44,25 @@ MIN_MARKDOWN_WORD_RATIO = 0.75
 MAX_REPEATED_CHAR_RATIO = 0.3
 
 
-def run_early_quality_check(pdf_path: str) -> Tuple[bool, Dict[str, Any]]:
+_TOKEN_RE = re.compile(r"\S+")
+
+
+def _too_many_words_stats(total_words: int, page_count: int, pages_scanned: int, limit: int) -> Dict[str, Any]:
+    return {
+        "word_count": total_words,
+        "page_count": page_count,
+        "words_per_page": round(total_words / pages_scanned, 1),
+        "pages_scanned": pages_scanned,
+        "error_code": TOO_MANY_WORDS_ERROR_CODE,
+        "word_limit": limit,
+        "failure_reason": (
+            f"Too many words ({total_words:,} counted on the first {pages_scanned} "
+            f"of {page_count} pages, limit {limit:,})"
+        ),
+    }
+
+
+def run_early_quality_check(pdf_path: str, max_words: int | None = None) -> Tuple[bool, Dict[str, Any]]:
     """
     Fast quality check using only word extraction (no pymupdf4llm).
 
@@ -54,6 +82,10 @@ def run_early_quality_check(pdf_path: str) -> Tuple[bool, Dict[str, Any]]:
         (passed, stats) where stats contains word_count, page_count,
         words_per_page, and failure_reason (if failed).
     """
+    # The app passes its own OCR_MAX_WORDS_PER_FILE with every invocation so the
+    # two sides can never disagree; the env default only covers direct calls.
+    limit = MAX_TOTAL_WORDS if max_words is None else int(max_words)
+
     doc = fitz.open(pdf_path)
     try:
         page_count = len(doc)
@@ -63,9 +95,33 @@ def run_early_quality_check(pdf_path: str) -> Tuple[bool, Dict[str, Any]]:
         all_word_texts = []
 
         for i in range(page_count):
-            words = doc[i].get_text("words")
+            page = doc[i]
+
+            # Cheap pre-flight for a hostile single page: `get_text("words")`
+            # materialises one tuple per word, so a page carrying millions of
+            # words can exhaust the function's memory before the ceiling is
+            # ever consulted. Estimate the page's word count from its plain
+            # text with a non-allocating token scan first; if that alone would
+            # cross the ceiling, refuse without building the word tuples.
+            if limit > 0:
+                remaining = limit - total_words
+                approx = 0
+                for _ in _TOKEN_RE.finditer(page.get_text("text")):
+                    approx += 1
+                    if approx > remaining:
+                        # Stop scanning: rejection is already certain.
+                        return False, _too_many_words_stats(
+                            total_words + approx, page_count, i + 1, limit
+                        )
+
+            words = page.get_text("words")
             word_count = len(words)
             total_words += word_count
+
+            # Bail as soon as the running total crosses the ceiling: no more
+            # pages are read and no concatenated text is built.
+            if limit > 0 and total_words > limit:
+                return False, _too_many_words_stats(total_words, page_count, i + 1, limit)
 
             if word_count < MIN_WORDS_PER_PAGE:
                 pages_with_few_words += 1
