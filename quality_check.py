@@ -24,11 +24,11 @@ MAX_WORD_LENGTH = 200  # Detect binary/corrupted content
 
 # Per-file word ceiling, mirrored from the app's OCR_MAX_WORDS_PER_FILE. A
 # document above it is refused HERE, in the cheap word pass, before the
-# parallel markdown extraction and bounding-box pass — a 2M+-word PDF would
+# parallel markdown extraction and bounding-box pass — a multi-million-word PDF would
 # otherwise run the function into its timeout and produce a response far
 # beyond the 6 MB payload limit. The app records the verdict as the terminal
 # TOO_LARGE status (downloadable, not searchable). 0 disables the check.
-MAX_TOTAL_WORDS = int(os.environ.get("OCR_MAX_WORDS_PER_FILE", "2000000"))
+MAX_TOTAL_WORDS = int(os.environ.get("OCR_MAX_WORDS_PER_FILE", "500000"))
 TOO_MANY_WORDS_ERROR_CODE = "TOO_MANY_WORDS"
 MIN_CONTENT_LENGTH = 50  # Minimum concatenated text length
 # Markdown must retain at least this fraction of early-check words.
