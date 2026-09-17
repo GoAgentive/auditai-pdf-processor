@@ -208,7 +208,7 @@ def lambda_handler(event, context):
         "graphics_mode": "none" | "full" | "graphics_only"  (optional, default: "none"),
         "output_bucket": "bucket-name"  (optional, enables per-page S3 output for large docs),
         "request_id": "unique-id"  (optional, used for S3 output key prefix),
-        "max_words": 2000000  (optional, per-file word ceiling; 0 disables; defaults to OCR_MAX_WORDS_PER_FILE)
+        "max_words": 500000  (optional, per-file word ceiling; 0 disables; defaults to OCR_MAX_WORDS_PER_FILE)
     }
 
     Graphics modes:
