@@ -226,12 +226,10 @@ def lambda_handler(event, context):
         graphics_mode = body.get("graphics_mode", "none")
         output_bucket = body.get("output_bucket")
         request_id = body.get("request_id")
+        # Validated in quality_check.parse_word_ceiling (non-negative int;
+        # bool/float/negative/inf/junk fall back to the env default with a
+        # warning rather than raising or silently disabling the guard).
         max_words = body.get("max_words")
-        if max_words is not None:
-            try:
-                max_words = int(max_words)
-            except (TypeError, ValueError):
-                max_words = None
         logger.info(
             "Received s3_path: %s, graphics_mode: %s, output_bucket: %s",
             s3_path, graphics_mode, output_bucket,
