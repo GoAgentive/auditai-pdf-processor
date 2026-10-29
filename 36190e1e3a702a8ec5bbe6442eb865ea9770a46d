@@ -1,0 +1,21 @@
+quality_check.py
+  s_67d855aee6429b::t_7d5f9b3cd34081 47,67-70,86,93,96
+index.py
+  s_67d855aee6429b::t_7d5f9b3cd34081 50,73,210-211,229-234,279
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.4",
+  "base_commit_sha": "36190e1e3a702a8ec5bbe6442eb865ea9770a46d",
+  "prompts": {},
+  "sessions": {
+    "s_67d855aee6429b": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ebc81c9e-2582-4177-aa72-b47a1929a163",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Nathan-Agentive <Nathan@goagentive.com>"
+    }
+  }
+}

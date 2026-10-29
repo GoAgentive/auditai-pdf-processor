@@ -1,0 +1,22 @@
+annotate.py
+  s_23a026d9d555b1::t_908c2bf5dd61ed 860-865,867,869,891-898,900-903
+test_annotate.py
+  s_23a026d9d555b1::t_e17928bee8dfc3 483-512,519
+  s_23a026d9d555b1::t_fb37a80668ee7f 422-423,428-431,434-443,449
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.11",
+  "base_commit_sha": "488fa8090076cdd7963a86f3e83aa4d6aeef59f1",
+  "prompts": {},
+  "sessions": {
+    "s_23a026d9d555b1": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "ccdc4477-f384-4e72-870f-9c183b5ea0fe",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Nathan-Agentive <Nathan@goagentive.com>"
+    }
+  }
+}
