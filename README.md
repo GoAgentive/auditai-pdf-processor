@@ -189,3 +189,23 @@ python -m venv /tmp/bump-check && /tmp/bump-check/bin/pip install -r requirement
 pymupdf4llm markdown the Lambda ships and exits non-zero if any token was lost.
 Ligature collapse (e.g. "Office" → "Offce" in table cells) is reported separately
 and tolerated — it is cosmetic and present in all 1.27.x/1.28.x releases.
+## In-cluster HTTP service (Kubernetes / AKS)
+
+The same code also runs as a long-lived HTTP service (`server.py`, image `Dockerfile.server`) for
+clusters without Lambda. Azure Functions can't stand in: HTTP responses there are capped at 230 s and
+Flex Consumption tops out at 4 GB, while this processor needs up to 300 s and 10 GB.
+
+- `POST /invoke` takes the Lambda event, with `input_url` (a presigned GET URL the app minted) in
+  place of `s3_path`, and answers with the Lambda result's status code and JSON body.
+- `GET /healthz` for readiness.
+- One document per process at a time (extraction already uses every core); scale with replicas.
+- Manifest-mode page writes (`output_bucket`, documents over 20 pages) go to the store named by
+  `STORAGE_PROVIDER`: `s3` (boto3, default) or `azure_blob` (Blob REST with the pod's Workload
+  Identity; `AZURE_STORAGE_ACCOUNT`, optional `AZURE_STORAGE_BLOB_ENDPOINT`). The manifest key is then
+  `azblob://<container>/<key>`.
+
+```bash
+docker build -f Dockerfile.server -t pdf-processor-server .
+docker run --rm -p 8080:8080 pdf-processor-server
+python -m pytest tests/test_server.py
+```

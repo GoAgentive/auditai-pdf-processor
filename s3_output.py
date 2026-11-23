@@ -89,8 +89,10 @@ def write_results_to_s3(
     )
 
     logger.info(
-        "Wrote %d page results to s3://%s/%s (parallel=%d)",
+        "Wrote %d page results to %s/%s (parallel=%d)",
         page_count, output_bucket, prefix, n_workers,
     )
 
-    return f"s3://{output_bucket}/{manifest_key}"
+    # "s3://" from boto3; "azblob://" from storage_io.AzureBlobWriter.
+    scheme = getattr(s3_client, "uri_scheme", "s3")
+    return f"{scheme}://{output_bucket}/{manifest_key}"

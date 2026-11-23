@@ -7,7 +7,6 @@ Thin entry point that orchestrates:
 """
 
 import json
-import boto3
 import fitz
 import logging
 import os
@@ -23,6 +22,7 @@ from extraction import (
     build_graphics_only_data,
 )
 from s3_output import should_use_s3_output, write_results_to_s3
+from storage_io import download_url, key_from_url, output_client, s3_client
 
 # Configure logging — AWS Lambda pre-configures the root logger,
 # so basicConfig() is a no-op. Explicitly set the level instead.
@@ -38,9 +38,6 @@ import pymupdf4llm
 print(f"PyMuPDF (fitz) version: {fitz.version}")
 print(f"pymupdf4llm version: {pymupdf4llm.__version__}")
 
-s3_client = boto3.client("s3")
-
-
 def process_pdf_from_s3(
     bucket: str,
     key: str,
@@ -48,9 +45,11 @@ def process_pdf_from_s3(
     output_bucket: str = None,
     request_id: str = None,
     max_words: int | None = None,
+    input_url: str = None,
 ) -> Dict[str, Any]:
     """
-    Download PDF from S3 to /tmp, process it, and return results.
+    Download PDF from S3 (or from `input_url`, a presigned GET URL) to /tmp,
+    process it, and return results.
 
     Pipeline:
     1. Download to /tmp
@@ -64,7 +63,10 @@ def process_pdf_from_s3(
     local_path = f"/tmp/{os.path.basename(key)}"
     try:
         # Step 1: Download PDF to /tmp
-        s3_client.download_file(bucket, key, local_path)
+        if input_url:
+            download_url(input_url, local_path)
+        else:
+            s3_client().download_file(bucket, key, local_path)
         file_size = os.path.getsize(local_path)
         logger.info("Downloaded %s (%d bytes) to %s", key, file_size, local_path)
 
@@ -153,7 +155,7 @@ def process_pdf_from_s3(
             # Step 6: Output
             if should_use_s3_output(page_count, output_bucket, request_id):
                 manifest_key = write_results_to_s3(
-                    s3_client,
+                    output_client(),
                     output_bucket,
                     request_id,
                     key,
@@ -205,6 +207,8 @@ def lambda_handler(event, context):
     Expected event format:
     {
         "s3_path": "s3://bucket-name/path/to/file.pdf",
+        "input_url": "https://..."  (instead of s3_path: a presigned GET URL, as the
+                                     in-cluster service is called; see server.py),
         "graphics_mode": "none" | "full" | "graphics_only"  (optional, default: "none"),
         "output_bucket": "bucket-name"  (optional, enables per-page S3 output for large docs),
         "request_id": "unique-id"  (optional, used for S3 output key prefix),
@@ -223,6 +227,7 @@ def lambda_handler(event, context):
             body = event
 
         s3_path = body.get("s3_path")
+        input_url = body.get("input_url")
         graphics_mode = body.get("graphics_mode", "none")
         output_bucket = body.get("output_bucket")
         request_id = body.get("request_id")
@@ -234,6 +239,23 @@ def lambda_handler(event, context):
             "Received s3_path: %s, graphics_mode: %s, output_bucket: %s",
             s3_path, graphics_mode, output_bucket,
         )
+
+        if input_url:
+            if not input_url.startswith(("https://", "http://")):
+                return {
+                    "statusCode": 400,
+                    "body": json.dumps({"error": "Invalid input_url: must be an http(s) URL"}),
+                }
+            # The output prefix is hashed from the key, as for s3_path.
+            result = process_pdf_from_s3(
+                None, key_from_url(input_url), graphics_mode, output_bucket, request_id, max_words,
+                input_url=input_url,
+            )
+            return {
+                "statusCode": 200 if result.get("success") else 500,
+                "headers": {"Content-Type": "application/json"},
+                "body": json.dumps(result),
+            }
 
         if not s3_path:
             return {
