@@ -139,7 +139,15 @@ def _has_unread_raster(page: fitz.Page) -> bool:
     return False
 
 
-def run_early_quality_check(pdf_path: str, max_words: int | None = None) -> Tuple[bool, Dict[str, Any]]:
+def _needs_page_ocr(doc: fitz.Document, index: int) -> bool:
+    try:
+        return _has_unread_raster(doc[index])
+    except (RuntimeError, ValueError) as exc:
+        logger.warning("Could not inspect raster content on page %d: %s", index + 1, exc)
+        return True
+
+
+def run_early_quality_check(pdf_path: str, max_words: int | None = None, *, page_specific: bool = False) -> Tuple[bool, Dict[str, Any]]:
     """
     Fast quality check using only word extraction (no pymupdf4llm).
 
@@ -168,6 +176,7 @@ def run_early_quality_check(pdf_path: str, max_words: int | None = None) -> Tupl
         page_count = len(doc)
         total_words = 0
         sparse_pages = []
+        sparse_word_counts = {}
         has_long_words = False
         all_word_texts = []
 
@@ -204,6 +213,8 @@ def run_early_quality_check(pdf_path: str, max_words: int | None = None) -> Tupl
 
             if word_count < MIN_WORDS_PER_PAGE:
                 sparse_pages.append(i)
+                if page_specific:
+                    sparse_word_counts[i] = word_count
 
             for w in words:
                 text = str(w[4])
@@ -229,7 +240,7 @@ def run_early_quality_check(pdf_path: str, max_words: int | None = None) -> Tupl
             stats["failure_reason"] = f"Too few words ({total_words})"
             return False, stats
 
-        if words_per_page < MIN_WORDS_PER_PAGE:
+        if not page_specific and words_per_page < MIN_WORDS_PER_PAGE:
             stats["failure_reason"] = (
                 f"Too few words per page ({words_per_page:.1f}, minimum {MIN_WORDS_PER_PAGE})"
             )
@@ -255,19 +266,27 @@ def run_early_quality_check(pdf_path: str, max_words: int | None = None) -> Tupl
             stats["failure_reason"] = gibberish_reason
             return False, stats
 
-        # Check after the whole-file word ceiling and existing cheap gates.
-        # Their terminal verdicts take precedence over the OCR fallback.
-        for index in sparse_pages:
-            page = doc[index]
-            try:
-                needs_ocr = _has_unread_raster(page)
-            except (RuntimeError, ValueError) as exc:
-                logger.warning("Could not inspect raster content on page %d: %s", index + 1, exc)
-                needs_ocr = True
-            if needs_ocr:
-                stats["failure_reason"] = f"Page {index + 1} contains image content with insufficient embedded text"
-                return False, stats
+        if page_specific and len(sparse_pages) < page_count:
+            scan_pages = [i + 1 for i in sparse_pages if _needs_page_ocr(doc, i)]
+            if scan_pages:
+                stats["ocr_pages"] = scan_pages
+                # Apply the native density threshold to the pages we intend to keep.
+                native_words = total_words - sum(sparse_word_counts[n - 1] for n in scan_pages)
+                stats["native_word_count"] = native_words
+                words_per_page = native_words / (page_count - len(scan_pages))
+                stats["native_words_per_page"] = round(words_per_page, 1)
 
+        if page_specific and words_per_page < MIN_WORDS_PER_PAGE:
+            stats["failure_reason"] = (
+                f"Too few words per page ({words_per_page:.1f}, minimum {MIN_WORDS_PER_PAGE})"
+            )
+            return False, stats
+
+        if not page_specific:
+            for i in sparse_pages:
+                if _needs_page_ocr(doc, i):
+                    stats["failure_reason"] = f"Page {i + 1} contains image content with insufficient embedded text"
+                    return False, stats
         return True, stats
 
     finally:

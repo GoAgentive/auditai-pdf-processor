@@ -11,6 +11,8 @@ import boto3
 import fitz
 import logging
 import os
+import tempfile
+import uuid
 from typing import Dict, Any
 
 from models import DocumentInfo, PDFProcessingResponse
@@ -48,6 +50,7 @@ def process_pdf_from_s3(
     output_bucket: str = None,
     request_id: str = None,
     max_words: int | None = None,
+    page_specific_ocr: bool = False,
 ) -> Dict[str, Any]:
     """
     Download PDF from S3 to /tmp, process it, and return results.
@@ -61,6 +64,7 @@ def process_pdf_from_s3(
     6. Optional graphics extraction
     7. S3 output for large docs, inline for small
     """
+    scan_pages = []
     local_path = f"/tmp/{os.path.basename(key)}"
     try:
         # Step 1: Download PDF to /tmp
@@ -70,7 +74,10 @@ def process_pdf_from_s3(
 
         # Step 2: Early quality check (fast — no pymupdf4llm)
         if graphics_mode != "graphics_only":
-            passed, stats = run_early_quality_check(local_path, max_words=max_words)
+            selective = page_specific_ocr is True and bool(output_bucket) and graphics_mode == "none"
+            passed, stats = run_early_quality_check(local_path, max_words=max_words, page_specific=selective)
+            if passed:
+                scan_pages = stats.get("ocr_pages", [])
             logger.info("Quality check: passed=%s, stats=%s", passed, stats)
 
             if not passed:
@@ -113,9 +120,13 @@ def process_pdf_from_s3(
                 page_chunks = extract_markdown_parallel(local_path, page_count)
 
                 # Step 3b: Post-extraction markdown quality check
+                if scan_pages and len(page_chunks) != page_count:
+                    raise ValueError("Missing markdown pages in mixed PDF")
+                scans = set(scan_pages)
+                native_chunks = [chunk for i, chunk in enumerate(page_chunks, 1) if i not in scans] if scans else page_chunks
                 md_passed, md_stats = run_markdown_quality_check(
-                    page_chunks,
-                    early_word_count=stats.get("word_count", 0),
+                    native_chunks,
+                    early_word_count=stats.get("native_word_count", stats.get("word_count", 0)),
                 )
                 logger.info(
                     "Markdown quality check: passed=%s, stats=%s", md_passed, md_stats
@@ -150,6 +161,22 @@ def process_pdf_from_s3(
                 len(structured_data),
             )
 
+            extra = {}
+            if scan_pages:
+                # One private object scoped to this invocation. Only its pages can be fetched by Azure.
+                subset_key = f"_lambda_results/{uuid.uuid4()}/scans.pdf"
+                with tempfile.TemporaryDirectory() as directory, fitz.open() as subset:
+                    for number in scan_pages:
+                        subset.insert_pdf(pdf_document, from_page=number - 1, to_page=number - 1,
+                                          links=False, annots=True, widgets=True,
+                                          final=int(number == scan_pages[-1]))
+                    path = os.path.join(directory, "scans.pdf")
+                    subset.save(path, garbage=2, clean=True, deflate=True)
+                    s3_client.upload_file(path, output_bucket, subset_key,
+                                          ExtraArgs={"ContentType": "application/pdf"})
+                extra["ocr_pages"] = scan_pages
+                extra["ocr_subset_key"] = subset_key
+
             # Step 6: Output
             if should_use_s3_output(page_count, output_bucket, request_id):
                 manifest_key = write_results_to_s3(
@@ -163,6 +190,7 @@ def process_pdf_from_s3(
                 )
                 return {
                     "success": True,
+                    **extra,
                     "output_mode": "s3",
                     "manifest_key": manifest_key,
                     "output_bucket": output_bucket,
@@ -179,7 +207,7 @@ def process_pdf_from_s3(
                 word_count=int(len(word_bounding_boxes)),
                 structured_data=structured_data,
             )
-            return response.to_dict()
+            return {**response.to_dict(), **extra}
 
         finally:
             pdf_document.close()
@@ -192,6 +220,7 @@ def process_pdf_from_s3(
             "success": False,
             "error": f"{str(e)} | traceback: {tb[-500:]}",
             "error_type": type(e).__name__,
+            **({"error_code": "PAGE_OCR_PREPARATION_FAILED"} if scan_pages else {}),
         }
     finally:
         if os.path.exists(local_path):
@@ -274,7 +303,7 @@ def lambda_handler(event, context):
 
         bucket, key = path_parts
 
-        result = process_pdf_from_s3(bucket, key, graphics_mode, output_bucket, request_id, max_words)
+        result = process_pdf_from_s3(bucket, key, graphics_mode, output_bucket, request_id, max_words, body.get("page_specific_ocr", False))
 
         status_code = 200 if result.get("success") else 500
         return {
