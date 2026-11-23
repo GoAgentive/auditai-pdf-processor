@@ -142,3 +142,43 @@ def test_word_bounding_boxes_extracted(pdf_path):
         doc.close()
     assert len(words) > 100
     assert all(0.0 <= w.bbox["x0"] <= 1.0 for w in words)
+
+
+@pytest.mark.parametrize("kind", ["scan", "header", "blank", "blank-image", "logo", "dark-cover", "border", "tiled", "rotated-scan"])
+def test_mixed_pdf_keeps_scanned_content_on_the_ocr_path(tmp_path, kind):
+    # Two digital notes make the document-wide word ratio pass even if the
+    # following printed page would be completely missing from the output.
+    target = tmp_path / "mixed.pdf"
+    with fitz.open(str(SKIA_PDFS[1])) as note, fitz.open() as doc:
+        doc.insert_pdf(note)
+        doc.insert_pdf(note)
+        page = doc.new_page(width=note[0].rect.width, height=note[0].rect.height)
+        if kind == "tiled":
+            for i in range(4):
+                rect = fitz.Rect(0, page.rect.height * i / 4, page.rect.width, page.rect.height * (i + 1) / 4)
+                page.insert_image(rect, pixmap=note[0].get_pixmap(clip=rect))
+        elif kind != "blank":
+            image = note[0].get_pixmap()
+            if kind == "blank-image":
+                image.clear_with(255)
+            if kind == "border":
+                image.clear_with(255)
+                image.set_rect(fitz.IRect(0, 0, 3, image.height), (60, 60, 60))
+                image.set_rect(fitz.IRect(0, 0, image.width, 2), (60, 60, 60))
+            if kind == "dark-cover":
+                image.clear_with(70)
+            rect = fitz.Rect(20, 20, 50, 50) if kind == "logo" else page.rect
+            page.insert_image(rect, pixmap=image)
+        if kind in ("header", "blank-image"):
+            page.insert_text((30, 30), "Delivery summary")
+        if kind == "rotated-scan":
+            page.set_rotation(90)
+        doc.save(target)
+
+    passed, stats = run_early_quality_check(str(target))
+    if kind in ("scan", "header", "rotated-scan", "tiled"):
+        assert not passed
+        assert "Page 3" in stats["failure_reason"]
+        assert "error_code" not in stats  # ordinary quality failure routes to OCR
+    else:
+        assert passed, stats

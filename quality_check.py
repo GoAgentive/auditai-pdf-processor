@@ -90,6 +90,55 @@ def _too_many_words_stats(total_words: int, page_count: int, pages_scanned: int,
     }
 
 
+_INK_RUN = re.compile(rb"[\x00-\xdf]+")
+
+
+def _has_unread_raster(page: fitz.Page) -> bool:
+    """Check sparse pages for substantial visible image content outside their text layer."""
+    # Image and word boxes use unrotated page coordinates. Rendering clips in
+    # display coordinates, including on a cropped or quarter-turned page.
+    rotation = page.rotation_matrix
+    images = page.get_image_info()
+    boxes = [fitz.Rect(image["bbox"]) * rotation & page.rect for image in images]
+    region = fitz.Rect()
+    for box in boxes:
+        region |= box
+    half_page = page.rect.get_area() / 2
+    # Scanners may encode one sheet as adjoining image strips.
+    if region.is_empty or region.get_area() < half_page or sum(box.get_area() for box in boxes) < half_page:
+        return False
+
+    # Rendering even a thumbnail can decode overlapping source images at full
+    # resolution. Hand unusually large candidates to the existing OCR provider.
+    pixels = sum(image["width"] * image["height"] for image, box in zip(images, boxes)
+                 if box.intersects(region))
+    if pixels > 20_000_000:
+        return True
+
+    scale = min(1, 384 / max(region.width, region.height))
+    matrix = fitz.Matrix(scale, scale)
+    sample = page.get_pixmap(matrix=matrix, clip=region, colorspace=fitz.csGRAY, alpha=False, annots=False)
+    for word in page.get_text("words"):
+        box = fitz.Rect(word[:4]) * rotation * matrix
+        mask = (box + (-1, -1, 1, 1)).irect & sample.irect
+        if not mask.is_empty:
+            sample.set_rect(mask, (255,))
+
+    # Printed forms have short runs of ink separated by light paper. A solid
+    # background, a blank raster or a border by itself is poor evidence for OCR.
+    samples = sample.samples
+    if sum(pixel >= 224 for pixel in samples) < len(samples) * 0.7:
+        return False
+    previous_row_has_ink_runs = False
+    for y in range(sample.height):
+        row = samples[y * sample.stride:y * sample.stride + sample.width]
+        has_ink_runs = len(_INK_RUN.findall(row)) >= 6
+        if previous_row_has_ink_runs and has_ink_runs:
+            return True
+        previous_row_has_ink_runs = has_ink_runs
+    return False
+
+
 def run_early_quality_check(pdf_path: str, max_words: int | None = None) -> Tuple[bool, Dict[str, Any]]:
     """
     Fast quality check using only word extraction (no pymupdf4llm).
@@ -118,7 +167,7 @@ def run_early_quality_check(pdf_path: str, max_words: int | None = None) -> Tupl
     try:
         page_count = len(doc)
         total_words = 0
-        pages_with_few_words = 0
+        sparse_pages = []
         has_long_words = False
         all_word_texts = []
 
@@ -154,7 +203,7 @@ def run_early_quality_check(pdf_path: str, max_words: int | None = None) -> Tupl
                 return False, _too_many_words_stats(total_words, page_count, i + 1, limit)
 
             if word_count < MIN_WORDS_PER_PAGE:
-                pages_with_few_words += 1
+                sparse_pages.append(i)
 
             for w in words:
                 text = str(w[4])
@@ -190,7 +239,7 @@ def run_early_quality_check(pdf_path: str, max_words: int | None = None) -> Tupl
             stats["failure_reason"] = "Detected abnormally long words (binary content)"
             return False, stats
 
-        if pages_with_few_words == page_count:
+        if len(sparse_pages) == page_count:
             stats["failure_reason"] = "All pages have insufficient content"
             return False, stats
 
@@ -205,6 +254,19 @@ def run_early_quality_check(pdf_path: str, max_words: int | None = None) -> Tupl
         if gibberish_reason:
             stats["failure_reason"] = gibberish_reason
             return False, stats
+
+        # Check after the whole-file word ceiling and existing cheap gates.
+        # Their terminal verdicts take precedence over the OCR fallback.
+        for index in sparse_pages:
+            page = doc[index]
+            try:
+                needs_ocr = _has_unread_raster(page)
+            except (RuntimeError, ValueError) as exc:
+                logger.warning("Could not inspect raster content on page %d: %s", index + 1, exc)
+                needs_ocr = True
+            if needs_ocr:
+                stats["failure_reason"] = f"Page {index + 1} contains image content with insufficient embedded text"
+                return False, stats
 
         return True, stats
 
