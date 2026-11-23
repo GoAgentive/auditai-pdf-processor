@@ -21,7 +21,7 @@ echo "Starting Docker build..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Try Docker build first, with correct Lambda layer structure
-# Using Python 3.12 (Amazon Linux 2023) which has glibc 2.34, compatible with PyMuPDF 1.28.x wheels
+# Using Python 3.12 (Amazon Linux 2023) which has glibc 2.34, compatible with PyMuPDF 2.1 wheels
 docker run --rm \
   --platform linux/amd64 \
   -v "$SCRIPT_DIR":/host \
@@ -36,17 +36,15 @@ docker run --rm \
     mkdir -p /tmp/build/python/lib/python3.12/site-packages/
 
     # Python 3.12 on Amazon Linux 2023 has glibc 2.34
-    # PyMuPDF 1.28.x wheels require glibc 2.28+ (manylinux_2_28)
+    # PyMuPDF 2.1 wheels require glibc 2.28+ (manylinux_2_28)
     # This combination allows pre-built wheels to work
     # Versions must match requirements.txt
     #
-    # boto3 is deliberately NOT installed: the python3.12 Lambda runtime
-    # bundles it, and pymupdf4llm 1.27.x pulls pymupdf-layout (onnxruntime +
-    # numpy + networkx, ~130 MB unzipped) which puts the layer near the
-    # 250 MB unzipped budget for function + layers.
+    # The runtime provides boto3. Keep the runtime's SDK out of the layer
+    # to leave room for native layout inference within Lambda's size limit.
     pip install \
-        PyMuPDF==1.27.2.3 \
-        pymupdf4llm==1.27.2.3 \
+        PyMuPDF==2.1 \
+        pymupdf4llm==2.1 \
         -t /tmp/build/python/lib/python3.12/site-packages/ --no-cache-dir
 
     echo '=== Checking installation results ==='
