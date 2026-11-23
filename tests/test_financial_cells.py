@@ -5,6 +5,7 @@ import re
 
 import pymupdf
 import pymupdf4llm
+import pytest
 
 from extraction import _split_period_table, extract_markdown_parallel, extract_words
 
@@ -71,6 +72,9 @@ def test_unruled_statement_keeps_labels_and_years_in_distinct_cells():
     assert grid[0] == ["", "2025", "2024", "2023"]
     assert ["Net sales", "$397,465", "$433,226", "$583,102"] in grid
     assert ["Gross profit", "88,648", "108,692", "93,294"] in grid
+    assert ["Weighted average shares outstanding:", "", "", ""] in grid
+    assert ["Trade name impairment charges", "2,831", "-", "13"] in grid
+    assert ["Cash dividends declared per share", "$0.92", "$0.89", "$0.82"] in grid
     for box in chunk["page_boxes"]:
         start, end = box["pos"]
         if box["class"] == "table":
@@ -91,3 +95,25 @@ def test_conflicting_amount_keeps_the_entire_original_table():
         modified = table.replace("0.82", "0.28")
         assert modified != table
         assert _split_period_table(doc, 0, box["bbox"], modified) == modified
+
+
+@pytest.mark.parametrize(("note", "prior"), [("5", ""), ("(2)", "7")])
+def test_number_beside_label_is_never_promoted_to_an_empty_year(note, prior):
+    with pymupdf.open() as doc:
+        page = doc.new_page(width=400, height=200)
+        for y, row in [
+            (20, [(20, "Year Ended")]),
+            (40, [(210, "2025"), (300, "2024")]),
+            (60, [(20, "Sales"), (210, "100"), (300, "90")]),
+            (80, [(20, "Cost"), (210, "40"), (300, "30")]),
+            (100, [(20, "Other"), (52, note), (300, prior)]),
+        ]:
+            for x, word in row:
+                if word:
+                    page.insert_text((x, y), word, fontsize=10)
+        table = (
+            "|Year<br>2025|Ended<br>2024|\n|---|---|\n"
+            "|Sales<br>100|90|\n|Cost<br>40|30|\n"
+            f"|Other<br>{note}|{prior}|\n"
+        )
+        assert _split_period_table(doc, 0, page.rect, table) == table

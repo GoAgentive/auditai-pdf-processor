@@ -5,6 +5,7 @@ missing /dev/shm. Each worker opens its own fitz.Document and writes
 results to a temp JSON file.
 """
 
+from bisect import bisect_right
 import json
 import logging
 import multiprocessing
@@ -47,6 +48,18 @@ def _cell_text(markdown):
     return re.sub(r"<br>|</?sup>|\*\*|\s+", "", markdown)
 
 
+def _printed_rows(words):
+    """Group words crossing the same horizontal midline, then read left to right."""
+    rows = []
+    midline = None
+    for word in sorted(words, key=lambda w: w[1] + w[3]):
+        if midline is None or not word[1] <= midline <= word[3]:
+            rows.append([])
+            midline = (word[1] + word[3]) / 2
+        rows[-1].append(word)
+    return [sorted(row, key=lambda w: w[0]) for row in rows]
+
+
 def _split_period_table(doc, page_index, bbox, markdown):
     """Restore the label column only when the PDF corroborates the entire table."""
     lines = markdown.rstrip().splitlines()
@@ -70,14 +83,21 @@ def _split_period_table(doc, page_index, bbox, markdown):
     # A period caption spans the printed columns. The next physical line has
     # only years. Use that independent text ordering to rejoin the caption.
     try:
-        source = doc[page_index].get_text("text", clip=bbox, sort=True)
+        words = doc[page_index].get_text("words", clip=bbox)
     except (RuntimeError, ValueError) as error:
         logger.warning("Skipping table correction on page %d: %s", page_index + 1, error)
         return markdown
-    printed = [line.strip() for line in source.splitlines() if line.strip()]
-    if len(printed) != len(lines) or printed[1].split() != years:
+    printed = _printed_rows(words)
+    if len(printed) != len(lines) or [w[4] for w in printed[1]] != years:
         return markdown
-    caption = printed[0]
+    centers = [(w[0] + w[2]) / 2 for w in printed[1]]
+    if any(right <= left for left, right in zip(centers, centers[1:])):
+        return markdown
+    # The midpoint between neighboring year headings separates their amounts.
+    # Extend the first interval leftward to separate labels from the first year.
+    boundaries = [centers[0] - (centers[1] - centers[0]) / 2]
+    boundaries.extend((left + right) / 2 for left, right in zip(centers, centers[1:]))
+    caption = " ".join(w[4] for w in printed[0])
     if not re.fullmatch(r"[\w ,./()–—-]+", caption):
         return markdown
     if _cell_text("".join(captions)) != _cell_text(caption):
@@ -91,25 +111,35 @@ def _split_period_table(doc, page_index, bbox, markdown):
         cells = row[1:-1].split("|")
         if len(cells) != len(years):
             return markdown
-        # A stand-alone currency sign belongs to the amount to its right.
-        fields = re.split(r" {2,}", re.sub(r"\$ +(?=[(\d-])", "$", source_row))
-        if not any(ch.isalpha() for ch in fields[0]):
+        columns = [[] for _ in range(len(years) + 1)]
+        for x0, _, x1, _, word, *_ in source_row:
+            column = bisect_right(boundaries, (x0 + x1) / 2)
+            columns[column].append(word)
+        label = " ".join(columns[0])
+        if not any(ch.isalpha() for ch in label):
             return markdown
-        if len(fields) == 1 and not any(map(_cell_text, cells[1:])):
-            if _cell_text(cells[0]) != _cell_text(fields[0]):
+        amounts = ["".join(column) for column in columns[1:]]
+        if label.endswith(":") and not any(amounts) and not any(map(_cell_text, cells[1:])):
+            if _cell_text(cells[0]) != _cell_text(label):
                 return markdown
             output.append(row + "|")
             continue
-        if len(fields) != len(years) + 1 or not all(_AMOUNT.fullmatch(v) for v in fields[1:]):
+        # Two number tokens in one year column are ambiguous, even if their
+        # concatenation happens to spell the value in the native Markdown.
+        if any(len(tokens) > 1 and tokens[:-1] != ["$"] for tokens in columns[1:]):
             return markdown
-        if [_cell_text(cell) for cell in cells[1:]] != fields[2:]:
+        if not all(_AMOUNT.fullmatch(value) for value in amounts):
+            return markdown
+        if [_cell_text(cell) for cell in cells[1:]] != amounts[1:]:
             return markdown
         # Retain the original Markdown styling in both halves of the cell.
         parts = cells[0].split("<br>")
         for cut in range(1, len(parts)):
-            label, amount = "<br>".join(parts[:cut]), "<br>".join(parts[cut:])
-            if _cell_text(label) == _cell_text(fields[0]) and _cell_text(amount) == fields[1]:
-                output.append("|" + "|".join([label, amount, *cells[1:]]) + "|")
+            left, right = "<br>".join(parts[:cut]), "<br>".join(parts[cut:])
+            if _cell_text(left) == _cell_text(label) and _cell_text(right) == amounts[0]:
+                if left.count("**") % 2 or right.count("**") % 2:
+                    return markdown
+                output.append("|" + "|".join([left, right, *cells[1:]]) + "|")
                 split_rows += 1
                 break
         else:
@@ -123,6 +153,8 @@ def _split_period_table(doc, page_index, bbox, markdown):
 def _markdown_chunks(doc, pages=None):
     chunks = pymupdf4llm.to_markdown(doc, pages=pages, page_chunks=True)
     for index, chunk in zip(range(len(doc)) if pages is None else pages, chunks):
+        if chunk.get("tables"):
+            continue
         text = chunk["text"]
         offset = 0
         for box in chunk.get("page_boxes", []):
