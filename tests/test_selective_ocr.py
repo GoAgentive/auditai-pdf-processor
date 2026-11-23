@@ -92,7 +92,7 @@ def test_selective_mode_preserves_native_scan_and_word_limit_verdicts(tmp_path):
     assert not passed and stats["error_code"] == "TOO_MANY_WORDS"
 
 
-def test_mixed_preparation_failure_does_not_return_native_success(tmp_path, monkeypatch):
+def test_subset_storage_failure_preserves_only_trusted_native_pages(tmp_path, monkeypatch):
     monkeypatch.setenv("AWS_EC2_METADATA_DISABLED", "true")
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
     import index
@@ -106,5 +106,8 @@ def test_mixed_preparation_failure_does_not_return_native_success(tmp_path, monk
 
     monkeypatch.setattr(index.s3_client, "upload_file", unavailable)
     result = index.process_pdf_from_s3("in", "failure-proof.pdf", "none", "out", "job", 500000, True)
-    assert not result["success"]
-    assert result["error_code"] == "PAGE_OCR_PREPARATION_FAILED"
+    assert result["success"]
+    assert result["ocr_pages"] == [2, 4]
+    assert result["ocr_subset_error"] == "preparation_failed"
+    assert "ocr_subset_key" not in result
+    assert "FOB Destination" in result["structured_data"][2]["text"]

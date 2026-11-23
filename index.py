@@ -43,6 +43,24 @@ print(f"pymupdf4llm version: {pymupdf4llm.__version__}")
 s3_client = boto3.client("s3")
 
 
+def prepare_ocr_subset(pdf_document, scan_pages, output_bucket):
+    """Keep valid digital results available even when preparing the scan object fails."""
+    key = f"_lambda_results/{uuid.uuid4()}/scans.pdf"
+    try:
+        with tempfile.TemporaryDirectory() as directory, fitz.open() as subset:
+            for number in scan_pages:
+                subset.insert_pdf(pdf_document, from_page=number - 1, to_page=number - 1,
+                                  links=False, annots=True, widgets=True,
+                                  final=int(number == scan_pages[-1]))
+            path = os.path.join(directory, "scans.pdf")
+            subset.save(path, garbage=2, clean=True, deflate=True)
+            s3_client.upload_file(path, output_bucket, key, ExtraArgs={"ContentType": "application/pdf"})
+        return {"ocr_pages": scan_pages, "ocr_subset_key": key}
+    except Exception:
+        logger.exception("Could not prepare the selected OCR pages")
+        return {"ocr_pages": scan_pages, "ocr_subset_error": "preparation_failed"}
+
+
 def process_pdf_from_s3(
     bucket: str,
     key: str,
@@ -161,21 +179,7 @@ def process_pdf_from_s3(
                 len(structured_data),
             )
 
-            extra = {}
-            if scan_pages:
-                # One private object scoped to this invocation. Only its pages can be fetched by Azure.
-                subset_key = f"_lambda_results/{uuid.uuid4()}/scans.pdf"
-                with tempfile.TemporaryDirectory() as directory, fitz.open() as subset:
-                    for number in scan_pages:
-                        subset.insert_pdf(pdf_document, from_page=number - 1, to_page=number - 1,
-                                          links=False, annots=True, widgets=True,
-                                          final=int(number == scan_pages[-1]))
-                    path = os.path.join(directory, "scans.pdf")
-                    subset.save(path, garbage=2, clean=True, deflate=True)
-                    s3_client.upload_file(path, output_bucket, subset_key,
-                                          ExtraArgs={"ContentType": "application/pdf"})
-                extra["ocr_pages"] = scan_pages
-                extra["ocr_subset_key"] = subset_key
+            extra = prepare_ocr_subset(pdf_document, scan_pages, output_bucket) if scan_pages else {}
 
             # Step 6: Output
             if should_use_s3_output(page_count, output_bucket, request_id):
