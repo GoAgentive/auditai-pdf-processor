@@ -37,6 +37,18 @@ def test_only_scanned_pages_in_provider_object(tmp_path, monkeypatch, s3_output)
     source = tmp_path / "source.pdf"
     subset = tmp_path / "subset.pdf"
     make_mixed_pdf(source)
+    # Keep the two real delivery notes. Give the table assertion its own known
+    # rows and columns so flattened prose cannot pass simply by containing "|".
+    with fitz.open(source) as document:
+        page = document.new_page()
+        for x in (55, 230, 340):
+            page.draw_line((x, 100), (x, 175))
+        for y in (100, 125, 150, 175):
+            page.draw_line((55, y), (340, y))
+        for row, (label, amount) in enumerate([("Account", "Amount"), ("Rent", "4,321"), ("Supplies", "6,789")]):
+            page.insert_text((60, 117 + 25 * row), label)
+            page.insert_text((235, 117 + 25 * row), amount)
+        document.saveIncr()
     keys = []
     objects = {}
 
@@ -63,13 +75,17 @@ def test_only_scanned_pages_in_provider_object(tmp_path, monkeypatch, s3_output)
     assert result["success"], result
     assert keys == [result["ocr_subset_key"]]
     assert result["ocr_pages"] == [2, 4]
-    assert result["document_info"]["page_count"] == 4
+    assert result["document_info"]["page_count"] == 5
     if s3_output:
         native = next(v for k, v in objects.items() if k.endswith("page_3.json"))
         assert "FOB Destination" in str(native)
+        table = next(v for k, v in objects.items() if k.endswith("page_5.json"))["structured_data"]["text"]
     else:
         assert "FOB Destination" in result["structured_data"][2]["text"]
-        assert "|" in result["structured_data"][2]["text"]
+        table = result["structured_data"][4]["text"]
+    cells = [[c.strip().strip("*") for c in line.strip("|").split("|")] for line in table.splitlines() if line.startswith("|")]
+    assert ["Rent", "4,321"] in cells
+    assert ["Supplies", "6,789"] in cells
     with fitz.open(source) as original, fitz.open(subset) as sent:
         assert len(sent) == 2
         for i, source_number in enumerate(result["ocr_pages"]):
