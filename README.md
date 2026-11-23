@@ -179,7 +179,7 @@ verify with the token-coverage sweep:
 ```bash
 # one venv per candidate version
 python -m venv /tmp/bump-check && /tmp/bump-check/bin/pip install -r requirements.txt pytest
-/tmp/bump-check/bin/pytest tests/                                  # must be 9/9
+/tmp/bump-check/bin/pytest tests/                                  # all cases must pass, including table cells and citation geometry
 /tmp/bump-check/bin/python scripts/compare_extraction_versions.py  # must print OK per file
 # optionally sweep a broader corpus:
 /tmp/bump-check/bin/python scripts/compare_extraction_versions.py path/to/more/*.pdf

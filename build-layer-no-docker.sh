@@ -26,8 +26,8 @@ pip3 install \
     --python-version 3.12 --implementation cp --abi cp312 \
     --platform manylinux_2_28_x86_64 --platform manylinux_2_17_x86_64 \
     --only-binary=:all: --no-cache-dir \
-    PyMuPDF==1.27.2.3 \
-    pymupdf4llm==1.27.2.3 \
+    PyMuPDF==2.1 \
+    pymupdf4llm==2.1 \
     -t layer-build/python/lib/python3.12/site-packages/
 
 # Basic cleanup
