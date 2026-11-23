@@ -9,6 +9,7 @@ import json
 import logging
 import multiprocessing
 import os
+import re
 import tempfile
 from typing import Dict, List, Any, Tuple
 
@@ -37,12 +38,112 @@ def _sanitize_chunks(chunks: list) -> list:
     return chunks
 
 
+_NUMBER = r"-?\d[\d,]*(?:\.\d+)?"
+_AMOUNT = re.compile(rf"(?:-|\$?(?:{_NUMBER}|\({_NUMBER}\)))")
+
+
+def _cell_text(markdown):
+    """Compare the text across layout line breaks and numeric superscripts."""
+    return re.sub(r"<br>|</?sup>|\*\*|\s+", "", markdown)
+
+
+def _split_period_table(doc, page_index, bbox, markdown):
+    """Restore the label column only when the PDF corroborates the entire table."""
+    lines = markdown.rstrip().splitlines()
+    if len(lines) < 4 or not lines[0].startswith("|") or "<br>" not in lines[0]:
+        return markdown
+    if not all(line.startswith("|") and line.endswith("|") for line in lines):
+        return markdown
+    header = lines[0][1:-1].split("|")
+    # Each native header cell must contain a piece of the caption and a year.
+    header_parts = [[part.strip() for part in cell.split("<br>") if part.strip()]
+                    for cell in header]
+    if len(header) < 2 or any(len(parts) != 2 for parts in header_parts):
+        return markdown
+    captions, year_cells = zip(*header_parts)
+    years = [_cell_text(cell) for cell in year_cells]
+    if not all(re.fullmatch(r"(?:19|20)\d{2}", year) for year in years):
+        return markdown
+    if len(set(years)) != len(years) or lines[1] != "|" + "---|" * len(years):
+        return markdown
+
+    # A period caption spans the printed columns. The next physical line has
+    # only years. Use that independent text ordering to rejoin the caption.
+    try:
+        source = doc[page_index].get_text("text", clip=bbox, sort=True)
+    except (RuntimeError, ValueError) as error:
+        logger.warning("Skipping table correction on page %d: %s", page_index + 1, error)
+        return markdown
+    printed = [line.strip() for line in source.splitlines() if line.strip()]
+    if len(printed) != len(lines) or printed[1].split() != years:
+        return markdown
+    caption = printed[0]
+    if not re.fullmatch(r"[\w ,./()–—-]+", caption):
+        return markdown
+    if _cell_text("".join(captions)) != _cell_text(caption):
+        return markdown
+
+    if all(part.startswith("**") and part.endswith("**") for part in captions):
+        caption = f"**{caption}**"
+    output = [caption, "", "||" + "|".join(year_cells) + "|", "|" + "---|" * (1 + len(years))]
+    split_rows = 0
+    for row, source_row in zip(lines[2:], printed[2:]):
+        cells = row[1:-1].split("|")
+        if len(cells) != len(years):
+            return markdown
+        # A stand-alone currency sign belongs to the amount to its right.
+        fields = re.split(r" {2,}", re.sub(r"\$ +(?=[(\d-])", "$", source_row))
+        if not any(ch.isalpha() for ch in fields[0]):
+            return markdown
+        if len(fields) == 1 and not any(map(_cell_text, cells[1:])):
+            if _cell_text(cells[0]) != _cell_text(fields[0]):
+                return markdown
+            output.append(row + "|")
+            continue
+        if len(fields) != len(years) + 1 or not all(_AMOUNT.fullmatch(v) for v in fields[1:]):
+            return markdown
+        if [_cell_text(cell) for cell in cells[1:]] != fields[2:]:
+            return markdown
+        # Retain the original Markdown styling in both halves of the cell.
+        parts = cells[0].split("<br>")
+        for cut in range(1, len(parts)):
+            label, amount = "<br>".join(parts[:cut]), "<br>".join(parts[cut:])
+            if _cell_text(label) == _cell_text(fields[0]) and _cell_text(amount) == fields[1]:
+                output.append("|" + "|".join([label, amount, *cells[1:]]) + "|")
+                split_rows += 1
+                break
+        else:
+            return markdown
+
+    if split_rows < 2:
+        return markdown
+    return "\n".join(output) + markdown[len(markdown.rstrip()):]
+
+
+def _markdown_chunks(doc, pages=None):
+    chunks = pymupdf4llm.to_markdown(doc, pages=pages, page_chunks=True)
+    for index, chunk in zip(range(len(doc)) if pages is None else pages, chunks):
+        text = chunk["text"]
+        offset = 0
+        for box in chunk.get("page_boxes", []):
+            start, end = (position + offset for position in box["pos"])
+            if box["class"] == "table":
+                original = text[start:end]
+                corrected = _split_period_table(doc, index, box["bbox"], original)
+                if corrected != original:
+                    text = text[:start] + corrected + text[end:]
+                    offset += len(corrected) - len(original)
+                    end = start + len(corrected)
+            box["pos"] = (start, end)
+        chunk["text"] = text
+    return _sanitize_chunks(chunks)
+
+
 def _worker_extract_markdown(pdf_path: str, page_indices: list, output_file: str):
     """Worker process: extract markdown for a subset of pages, write to temp file."""
     doc = fitz.open(pdf_path)
     try:
-        result = pymupdf4llm.to_markdown(doc, pages=page_indices, page_chunks=True)
-        _sanitize_chunks(result)
+        result = _markdown_chunks(doc, pages=page_indices)
         with open(output_file, "w") as f:
             json.dump(result, f)
     finally:
@@ -61,7 +162,7 @@ def extract_markdown_parallel(
     if page_count < MULTIPROCESSING_THRESHOLD or n_workers <= 1:
         doc = fitz.open(pdf_path)
         try:
-            return _sanitize_chunks(pymupdf4llm.to_markdown(doc, page_chunks=True))
+            return _markdown_chunks(doc)
         finally:
             doc.close()
 
